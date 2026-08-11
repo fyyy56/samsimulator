@@ -1,0 +1,17 @@
+@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=Space+Mono:wght@400;700&display=swap');
+
+body, html {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: #050505; 
+  font-family: 'Rajdhani', sans-serif;
+  color: #c8d3c5; /* Слегка зеленовато-серый базовый текст */
+}
+
+#root {
+  width: 100vw;
+  height: 100vh;
+}
