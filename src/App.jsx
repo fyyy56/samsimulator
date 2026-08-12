@@ -1,14 +1,27 @@
-import React, { useEffect, useState } from 'react';
-import { Viewer, useCesium, Entity, PolygonGraphics, PolylineGraphics, ScreenSpaceEventHandler, ScreenSpaceEvent, ImageryLayer } from 'resium';
-import { Cartesian3, Terrain, Math as CesiumMath, Color, ScreenSpaceEventType, Cartographic, UrlTemplateImageryProvider } from 'cesium';
+import { useEffect, useMemo, useState } from 'react';
+import { Viewer, useCesium, ScreenSpaceEventHandler, ScreenSpaceEvent, ImageryLayer } from 'resium';
+import {
+  buildModuleUrl,
+  Cartesian3,
+  Cartographic,
+  EllipsoidTerrainProvider,
+  Math as CesiumMath,
+  ScreenSpaceEventType,
+  TileMapServiceImageryProvider,
+  UrlTemplateImageryProvider,
+} from 'cesium';
 
 import HUD from './ui/HUD';
+import AirTargetMarker from './ui/AirTargetMarker';
 import BatteryMarker from './ui/BatteryMarker';
 import TrackMarker from './ui/TrackMarker';
 import MissileMarker from './ui/MissileMarker';
-import { useEngine, generateRadarPolygon, generateRadarBeam } from './store/engine';
+import { RadarCoverage, RadarSweep } from './ui/RadarVisualization';
+import { useEngine } from './store/engine';
+import { useViewStore } from './store/viewStore.js';
 
-const terrainProvider = Terrain.fromWorldTerrain();
+// Локальный terrain provider не зависит от Cesium Ion и стабильно работает в Safari.
+const terrainProvider = new EllipsoidTerrainProvider();
 
 // Провайдеры базовых карт
 const IMAGERY_PROVIDERS = {
@@ -43,8 +56,14 @@ function MapEvents({ onClick, onTrackSelect }) {
   const handleClick = (movement) => {
     if (!viewer) return;
     const pickedObject = viewer.scene.pick(movement.position);
-    if (pickedObject && pickedObject.id && pickedObject.id.id && pickedObject.id.id.startsWith('TRK')) {
-      onTrackSelect(pickedObject.id.id);
+    const pickedEntityId = typeof pickedObject?.id === 'string'
+      ? pickedObject.id
+      : pickedObject?.id?.id;
+    const pickedTrackId = typeof pickedEntityId === 'string'
+      ? pickedEntityId.match(/^TRK-\d+/)?.[0]
+      : null;
+    if (pickedTrackId) {
+      onTrackSelect(pickedTrackId);
       return;
     }
     const cartesian = viewer.scene.camera.pickEllipsoid(movement.position, viewer.scene.globe.ellipsoid);
@@ -61,35 +80,55 @@ function MapEvents({ onClick, onTrackSelect }) {
   );
 }
 
-const getBtnStyle = (isActive) => ({
-  background: isActive ? 'rgba(56, 189, 248, 0.2)' : 'rgba(20, 22, 19, 0.9)',
-  border: `1px solid ${isActive ? '#38bdf8' : 'rgba(163, 171, 142, 0.5)'}`,
-  color: isActive ? '#38bdf8' : '#e5e7eb',
-  padding: '8px 12px',
-  fontFamily: "'Space Mono', monospace",
-  fontSize: '12px',
-  cursor: 'pointer',
-  borderRadius: '2px',
-  boxShadow: '0 4px 10px rgba(0,0,0,0.5)',
-  transition: 'all 0.2s'
-});
-
 export default function App() {
-  const { 
-    tick, tracks, batteries, missiles, draftBattery,
-    selectedTrackId, setSelectedTrack, 
-    handleMapClick, closeBuildMenu
-  } = useEngine();
+  const tick = useEngine(state => state.tick);
+  const trackRenderVersion = useEngine(state => state.tracks.map(track => (
+    `${track.id}:${track.state}:${track.lastUpdateTime}:${track.trackQuality}`
+  )).join('|'));
+  const batteryIdList = useEngine(state => state.batteries.map(battery => battery.id).join('|'));
+  const missileIdList = useEngine(state => state.missiles.map(missile => missile.id).join('|'));
+  const airTargetIdList = useEngine(state => state.airTargets.map(target => target.id).join('|'));
+  const draftBattery = useEngine(state => state.draftBattery);
+  const selectedTrackId = useEngine(state => state.selectedTrackId);
+  const selectedBatteryId = useEngine(state => state.selectedBatteryId);
+  const setSelectedTrack = useEngine(state => state.setSelectedTrack);
+  const handleMapClick = useEngine(state => state.handleMapClick);
+  const closeBuildMenu = useEngine(state => state.closeBuildMenu);
+  const allEnemyTargetsVisible = useViewStore(state => state.layers.allEnemyTargets);
+  const toggleLayer = useViewStore(state => state.toggleLayer);
+  const tracks = trackRenderVersion ? useEngine.getState().tracks : [];
+  const batteryIds = useMemo(() => batteryIdList ? batteryIdList.split('|') : [], [batteryIdList]);
+  const missileIds = useMemo(() => missileIdList ? missileIdList.split('|') : [], [missileIdList]);
+  const airTargetIds = useMemo(() => airTargetIdList ? airTargetIdList.split('|') : [], [airTargetIdList]);
+  const activeTrackedTargetIds = new Set(
+    tracks.filter(track => track.state !== 'LOST').map(track => track.targetId),
+  );
+  const visibleTracks = allEnemyTargetsVisible
+    ? tracks.filter(track => track.state !== 'LOST')
+    : tracks;
 
   const [mapTheme, setMapTheme] = useState('satellite');
+  const [fallbackImagery, setFallbackImagery] = useState(null);
 
   useEffect(() => {
     const interval = setInterval(() => tick(), 33);
     return () => clearInterval(interval);
   }, [tick]);
 
-  const allBatteries = [...batteries];
-  if (draftBattery) allBatteries.push(draftBattery);
+  useEffect(() => {
+    let isMounted = true;
+    TileMapServiceImageryProvider
+      .fromUrl(buildModuleUrl('Assets/Textures/NaturalEarthII'))
+      .then(provider => {
+        if (isMounted) setFallbackImagery(provider);
+      })
+      .catch(() => {
+        // Внешние выбранные слои продолжат работать даже без локального fallback.
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   return (
     <div style={{ width: '100%', height: '100vh', margin: 0, position: 'relative', overflow: 'hidden' }}>
@@ -97,23 +136,34 @@ export default function App() {
         .cesium-viewer-bottom { display: none !important; }
       `}</style>
 
-      <div style={{ position: 'absolute', top: '24px', right: '24px', zIndex: 50, display: 'flex', gap: '8px', pointerEvents: 'auto' }}>
-        <button onClick={() => setMapTheme('dark')} style={getBtnStyle(mapTheme === 'dark')}>🌙 DARK</button>
-        <button onClick={() => setMapTheme('light')} style={getBtnStyle(mapTheme === 'light')}>☀️ LIGHT</button>
-        <button onClick={() => setMapTheme('satellite')} style={getBtnStyle(mapTheme === 'satellite')}>🌍 SATELLITE</button>
+      <div className="map-toolbar" id="map-layer-controls">
+        <button
+          aria-pressed={allEnemyTargetsVisible}
+          title="Global enemy target visibility"
+          onClick={() => toggleLayer('allEnemyTargets')}
+          className={`map-toolbar__button map-toolbar__button--compact ${allEnemyTargetsVisible ? 'is-active' : ''}`}
+        >
+          TRACKS {allEnemyTargetsVisible ? 'ON' : 'OFF'}
+        </button>
+        <button onClick={() => setMapTheme('dark')} className={`map-toolbar__button ${mapTheme === 'dark' ? 'is-active' : ''}`}>DARK</button>
+        <button onClick={() => setMapTheme('light')} className={`map-toolbar__button ${mapTheme === 'light' ? 'is-active' : ''}`}>LIGHT</button>
+        <button onClick={() => setMapTheme('satellite')} className={`map-toolbar__button ${mapTheme === 'satellite' ? 'is-active' : ''}`}>SAT</button>
       </div>
 
       <Viewer 
         full 
-        terrain={terrainProvider}
+        terrainProvider={terrainProvider}
         baseLayerPicker={false} 
         animation={false} 
         timeline={false} 
         infoBox={false} 
         selectionIndicator={false}
       >
+        {/* Локальная базовая поверхность на случай блокировки внешних тайлов Safari. */}
+        {fallbackImagery && <ImageryLayer imageryProvider={fallbackImagery} />}
+
         {/* Основной слой карты */}
-        <ImageryLayer imageryProvider={IMAGERY_PROVIDERS[mapTheme]} />
+        <ImageryLayer key={`base-map-${mapTheme}`} imageryProvider={IMAGERY_PROVIDERS[mapTheme]} />
 
         {/* Дополнительный слой с подписями городов (активен только в режиме Satellite) */}
         {mapTheme === 'satellite' && (
@@ -129,42 +179,29 @@ export default function App() {
           }} 
         />
 
-        {allBatteries.map(b => {
-          if (!b.components.radar) return null;
-          const coords = generateRadarPolygon(b.components.radar.lat, b.components.radar.lng, b.radarRangeKm, b.radarSector, b.radarHeading);
-          const flatCoords = coords.flatMap(c => [c[0], c[1]]);
-          return (
-            <Entity key={`radar-zone-${b.id}`}>
-              <PolygonGraphics 
-                hierarchy={Cartesian3.fromDegreesArray(flatCoords)}
-                material={Color.fromCssColorString('#4ade80').withAlpha(0.15)}
-                outline={true}
-                outlineColor={Color.fromCssColorString('#4ade80')}
-              />
-            </Entity>
-          );
-        })}
+        {batteryIds.map(batteryId => (
+          <RadarCoverage key={`radar-zone-${batteryId}`} batteryId={batteryId} />
+        ))}
+        {draftBattery && <RadarCoverage key={`radar-zone-${draftBattery.id}`} battery={draftBattery} />}
 
-        {batteries.map(b => {
-          if (!b.components.radar || b.radarSector < 360) return null;
-          const beam = generateRadarBeam(b.components.radar.lat, b.components.radar.lng, b.radarRangeKm, b.currentAngle);
-          const flatBeam = beam.flatMap(c => [c[0], c[1]]);
-          return (
-            <Entity key={`beam-${b.id}`}>
-              <PolylineGraphics 
-                positions={Cartesian3.fromDegreesArray(flatBeam)}
-                width={2}
-                material={Color.fromCssColorString('#4ade80')}
-              />
-            </Entity>
-          );
-        })}
-
-        {allBatteries.map(battery => (
-          <BatteryMarker key={battery.id} battery={battery} />
+        {batteryIds.map(batteryId => (
+          <RadarSweep key={`radar-sweep-${batteryId}`} batteryId={batteryId} />
         ))}
 
-        {tracks.map(track => track.visible && (
+        {batteryIds.map(batteryId => (
+          <BatteryMarker
+            key={batteryId}
+            batteryId={batteryId}
+            isSelected={selectedBatteryId === batteryId}
+          />
+        ))}
+        {draftBattery && <BatteryMarker key={draftBattery.id} battery={draftBattery} />}
+
+        {allEnemyTargetsVisible && airTargetIds
+          .filter(targetId => !activeTrackedTargetIds.has(targetId))
+          .map(targetId => <AirTargetMarker key={targetId} targetId={targetId} />)}
+
+        {visibleTracks.map(track => (
           <TrackMarker 
             key={track.id} 
             track={track} 
@@ -172,8 +209,8 @@ export default function App() {
           />
         ))}
 
-        {missiles.map(missile => (
-          <MissileMarker key={missile.id} missile={missile} />
+        {missileIds.map(missileId => (
+          <MissileMarker key={missileId} missileId={missileId} />
         ))}
       </Viewer>
       <HUD />

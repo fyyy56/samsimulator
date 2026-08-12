@@ -1,0 +1,92 @@
+export const INTERCEPTOR_SPECS = Object.freeze({
+  'INT-SHORT-V1': {
+    id: 'INT-SHORT-V1',
+    publicDisplay: {
+      displayName: 'SHORT-RANGE INTERCEPTOR',
+      maxSpeedKmh: 2500,
+      rangeKm: 40,
+    },
+    gameplayPhysics: {
+      launchSpeedKmh: 450,
+      maxSpeedKmh: 2500,
+      poweredAccelerationKmhPerSec: 520,
+      motorBurnTimeSec: 4,
+      quadraticDragPerSecond: 0.006,
+      dragReferenceSpeedKmh: 1000,
+      minimumEffectiveSpeedKmh: 350,
+      maxFlightTimeSec: 120,
+      maxGameRangeKm: 45,
+      interceptRadiusKm: 1,
+      maxTurnRateDegPerSec: 40,
+      terminalTurnRateDegPerSec: 55,
+      terminalRangeKm: 8,
+      midcourseGuidanceIntervalSec: 0.35,
+      terminalGuidanceIntervalSec: 0.08,
+      maxPredictionTimeSec: 8,
+      lostTrackContinueSec: 12,
+      postPassContinueSec: 8,
+    },
+  },
+  'INT-MEDIUM-V1': {
+    id: 'INT-MEDIUM-V1',
+    publicDisplay: {
+      displayName: 'MEDIUM-RANGE INTERCEPTOR',
+      maxSpeedKmh: 3600,
+      rangeKm: 80,
+    },
+    gameplayPhysics: {
+      launchSpeedKmh: 500,
+      maxSpeedKmh: 3600,
+      poweredAccelerationKmhPerSec: 620,
+      motorBurnTimeSec: 5,
+      quadraticDragPerSecond: 0.004,
+      dragReferenceSpeedKmh: 1000,
+      minimumEffectiveSpeedKmh: 400,
+      maxFlightTimeSec: 180,
+      maxGameRangeKm: 90,
+      interceptRadiusKm: 1,
+      maxTurnRateDegPerSec: 30,
+      terminalTurnRateDegPerSec: 45,
+      terminalRangeKm: 12,
+      midcourseGuidanceIntervalSec: 0.5,
+      terminalGuidanceIntervalSec: 0.1,
+      maxPredictionTimeSec: 12,
+      lostTrackContinueSec: 15,
+      postPassContinueSec: 10,
+    },
+  },
+  'INT-LONG-V1': {
+    id: 'INT-LONG-V1',
+    publicDisplay: {
+      displayName: 'LONG-RANGE INTERCEPTOR',
+      maxSpeedKmh: 4200,
+      rangeKm: 150,
+    },
+    gameplayPhysics: {
+      launchSpeedKmh: 550,
+      maxSpeedKmh: 4200,
+      poweredAccelerationKmhPerSec: 610,
+      motorBurnTimeSec: 6,
+      quadraticDragPerSecond: 0.0028,
+      dragReferenceSpeedKmh: 1000,
+      minimumEffectiveSpeedKmh: 450,
+      maxFlightTimeSec: 320,
+      maxGameRangeKm: 165,
+      interceptRadiusKm: 1,
+      maxTurnRateDegPerSec: 24,
+      terminalTurnRateDegPerSec: 38,
+      terminalRangeKm: 18,
+      midcourseGuidanceIntervalSec: 0.7,
+      terminalGuidanceIntervalSec: 0.12,
+      maxPredictionTimeSec: 16,
+      lostTrackContinueSec: 18,
+      postPassContinueSec: 12,
+    },
+  },
+});
+
+export function getInterceptorSpec(specId) {
+  const spec = INTERCEPTOR_SPECS[specId];
+  if (!spec) throw new Error(`Unknown interceptor spec: ${specId}`);
+  return spec;
+}
