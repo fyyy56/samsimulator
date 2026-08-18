@@ -21,6 +21,7 @@ export const DEFAULT_SURFACE_STYLE = Object.freeze({
   blur: 12,
   textOverrides: {},
   textSizes: {},
+  textLayouts: {},
 });
 
 const normalizeNumber = (value, fallback, minimum = -Infinity, maximum = Infinity) => (
@@ -45,6 +46,12 @@ export const normalizeSurfaceStyle = (style = {}) => ({
   blur: normalizeNumber(style.blur, 12, 0, 40),
   textOverrides: Object.fromEntries(Object.entries(style.textOverrides ?? {}).filter(([key, value]) => key && typeof value === 'string')),
   textSizes: Object.fromEntries(Object.entries(style.textSizes ?? {}).filter(([key, value]) => key && Number.isFinite(Number(value))).map(([key, value]) => [key, normalizeNumber(value, 10, 5, 96)])),
+  textLayouts: Object.fromEntries(Object.entries(style.textLayouts ?? {}).filter(([key, value]) => key && value && typeof value === 'object').map(([key, value]) => [key, {
+    x: normalizeNumber(value.x, 0, -1000, 1000),
+    y: normalizeNumber(value.y, 0, -1000, 1000),
+    width: normalizeNumber(value.width, 0, 0, 1200),
+    height: normalizeNumber(value.height, 0, 0, 800),
+  }])),
 });
 
 const createProfile = (id = 'custom', name = 'Мой дизайн') => ({ id, name, surfaces: {} });
@@ -52,11 +59,13 @@ const createProfile = (id = 'custom', name = 'Мой дизайн') => ({ id, na
 export const useDesignStore = create(persist((set, get) => ({
   schemaVersion: DESIGN_SCHEMA_VERSION,
   enabled: false,
+  inspectorSide: 'RIGHT',
   selectedSurfaceId: null,
   profiles: [createProfile()],
   activeProfileId: 'custom',
   toggle: () => set(state => ({ enabled: !state.enabled, selectedSurfaceId: null })),
   setEnabled: enabled => set({ enabled, selectedSurfaceId: null }),
+  setInspectorSide: inspectorSide => set({ inspectorSide: inspectorSide === 'LEFT' ? 'LEFT' : 'RIGHT' }),
   selectSurface: selectedSurfaceId => set({ selectedSurfaceId }),
   updateSurface: (surfaceId, patch) => set(state => ({
     profiles: state.profiles.map(profile => profile.id === state.activeProfileId ? {
@@ -108,6 +117,7 @@ export const useDesignStore = create(persist((set, get) => ({
   partialize: state => ({
     schemaVersion: state.schemaVersion,
     enabled: state.enabled,
+    inspectorSide: state.inspectorSide,
     profiles: state.profiles,
     activeProfileId: state.activeProfileId,
   }),
