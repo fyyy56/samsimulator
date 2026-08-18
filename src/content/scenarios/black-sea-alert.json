@@ -1,0 +1,8 @@
+{
+  "id": "BLACK_SEA_ALERT",
+  "name": "Black Sea Alert",
+  "description": "Массовый налёт с южного и восточного направлений. Готовый боевой сценарий Command Mode.",
+  "theater": "Украина",
+  "tags": ["Динамические волны", "Command Mode"],
+  "engineScenario": "MASS_RAID"
+}

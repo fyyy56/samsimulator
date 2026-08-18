@@ -39,3 +39,14 @@ export function getDestinationPoint(lat, lng, bearingDegrees, distanceKm) {
     lng: destinationLongitude * (180 / Math.PI),
   };
 }
+
+export function getSlantDistanceKm(positionA, altitudeAM, positionB, altitudeBM) {
+  const horizontalDistanceKm = getDistanceKm(
+    positionA.lat,
+    positionA.lng,
+    positionB.lat,
+    positionB.lng,
+  );
+  const altitudeDifferenceKm = (altitudeBM - altitudeAM) / 1000;
+  return Math.sqrt(horizontalDistanceKm ** 2 + altitudeDifferenceKm ** 2);
+}

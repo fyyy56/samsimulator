@@ -1,0 +1,5 @@
+[
+  {"id":"pac-3-mse","kind":"INTERCEPTOR","category":"Перехватчики","name":"PAC-3 MSE","country":"США","role":"Высокоэнергетический перехватчик ПРО","type":"ЗУР","rangeKm":"игровой профиль","features":["Высокая терминальная манёвренность","Специализация по баллистическим угрозам"],"assetId":"PAC_3","editorType":"INTERCEPTOR"},
+  {"id":"aim-120c7-ground","kind":"INTERCEPTOR","category":"Перехватчики","name":"AIM-120C-7","country":"США","role":"Наземный перехватчик NASAMS","type":"ЗУР наземного старта","rangeKm":"игровой профиль","features":["Старт с нулевой скорости","Средняя потеря энергии"],"assetId":"AIM_120","editorType":"INTERCEPTOR"},
+  {"id":"iris-t-missile","kind":"INTERCEPTOR","category":"Перехватчики","name":"IRIS-T SLM","country":"Германия","role":"Манёвренный перехватчик","type":"ЗУР вертикального старта","rangeKm":"игровой профиль","features":["Высокий turn rate","Ближняя и средняя зона"],"assetId":"IRIS_T_MISSILE","editorType":"INTERCEPTOR"}
+]

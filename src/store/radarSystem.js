@@ -125,3 +125,42 @@ export function countRadarMeasurements(battery, target) {
     count + countPhaseCrossings(startPhase, endPhase, entryPhase)
   ), 0);
 }
+
+/**
+ * Selects one radar as the network measurement owner for a target. Once a
+ * Track has a valid source, other radars consume the shared C2 Track instead
+ * of maintaining duplicate Radar–Target evidence contacts.
+ */
+export function selectNetworkRadarScanOpportunity(
+  batteries,
+  target,
+  preferredSourceBatteryId = null,
+) {
+  const preferredBattery = preferredSourceBatteryId
+    ? batteries.find(battery => battery.id === preferredSourceBatteryId)
+    : null;
+  if (preferredBattery && isTargetInRadarCoverage(preferredBattery, target)) {
+    const opportunityCount = countRadarMeasurements(preferredBattery, target);
+    return opportunityCount > 0 ? { battery: preferredBattery, opportunityCount } : null;
+  }
+
+  let selectedOpportunity = null;
+  batteries.forEach(battery => {
+    const opportunityCount = countRadarMeasurements(battery, target);
+    if (opportunityCount <= 0) return;
+    const radar = battery.components.radar;
+    const distanceKm = getDistanceKm(radar.lat, radar.lng, target.position.lat, target.position.lng);
+    const normalizedRange = distanceKm / Math.max(1, battery.radarRangeKm);
+    const score = opportunityCount * 10
+      + (battery.radarScanType === RADAR_SCAN_TYPE.ELECTRONIC_SECTOR ? 4 : 0)
+      + (1 - normalizedRange);
+    if (!selectedOpportunity || score > selectedOpportunity.score) {
+      selectedOpportunity = { battery, opportunityCount, score };
+    }
+  });
+  if (!selectedOpportunity) return null;
+  return {
+    battery: selectedOpportunity.battery,
+    opportunityCount: selectedOpportunity.opportunityCount,
+  };
+}
