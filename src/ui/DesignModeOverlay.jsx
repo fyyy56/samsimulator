@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   DEFAULT_SURFACE_STYLE,
+  DEFAULT_TEXT_LAYOUT,
   selectActiveDesignProfile,
   useDesignStore,
 } from '../store/designStore.js';
@@ -15,6 +16,11 @@ const NUMBER_FIELDS = [
 const TEXT_ELEMENT_SELECTOR = 'span,strong,b,small,p,h1,h2,h3,h4,label,button,code,time';
 
 const originalTextByNode = new WeakMap();
+
+const hexToRgba = (hex, alpha) => {
+  const numeric = Number.parseInt(hex.slice(1), 16);
+  return `rgba(${numeric >> 16}, ${(numeric >> 8) & 255}, ${numeric & 255}, ${alpha})`;
+};
 
 const getDirectTextSegments = element => {
   const segments = [];
@@ -88,7 +94,19 @@ const applyTextConfiguration = profile => {
       element.style.height = layout?.height > 0 ? `${layout.height}px` : '';
       element.style.position = layout ? 'relative' : '';
       element.style.zIndex = layout ? '2' : '';
-      element.style.display = layout?.width > 0 || layout?.height > 0 ? 'inline-block' : '';
+      element.style.display = layout ? 'inline-block' : '';
+      element.style.boxSizing = layout ? 'border-box' : '';
+      element.style.background = layout?.backgroundAlpha > 0
+        ? hexToRgba(layout.backgroundColor, layout.backgroundAlpha)
+        : '';
+      element.style.color = layout?.useTextColor ? layout.textColor : '';
+      element.style.borderColor = layout?.borderWidth > 0 ? layout.borderColor : '';
+      element.style.borderStyle = layout?.borderWidth > 0 ? 'solid' : '';
+      element.style.borderWidth = layout?.borderWidth > 0 ? `${layout.borderWidth}px` : '';
+      element.style.borderRadius = layout ? `${layout.borderRadius}px` : '';
+      element.style.opacity = layout ? String(layout.opacity) : '';
+      element.style.padding = layout?.padding > 0 ? `${layout.padding}px` : '';
+      element.style.backdropFilter = layout?.blur > 0 ? `blur(${layout.blur}px)` : '';
     });
     items.forEach(item => {
       writeTextSegment(item.nodes, style?.textOverrides?.[item.key] ?? item.originalText);
@@ -105,6 +123,7 @@ export default function DesignModeOverlay() {
   const selectSurface = useDesignStore(state => state.selectSurface);
   const updateSurface = useDesignStore(state => state.updateSurface);
   const resetSurface = useDesignStore(state => state.resetSurface);
+  const resetAllDesign = useDesignStore(state => state.resetAllDesign);
   const setEnabled = useDesignStore(state => state.setEnabled);
   const setInspectorSide = useDesignStore(state => state.setInspectorSide);
   const createProfile = useDesignStore(state => state.createProfile);
@@ -121,6 +140,9 @@ export default function DesignModeOverlay() {
   const dragRef = useRef(null);
   const selectedStyle = useMemo(() => ({ ...DEFAULT_SURFACE_STYLE, ...profile?.surfaces[selectedSurfaceId] }), [profile, selectedSurfaceId]);
   const selectedText = textOptions.find(item => item.key === selectedTextKey) ?? textOptions[0] ?? null;
+  const selectedTextLayout = selectedText
+    ? { ...DEFAULT_TEXT_LAYOUT, ...selectedStyle.textLayouts?.[selectedText.key] }
+    : DEFAULT_TEXT_LAYOUT;
 
   useEffect(() => {
     let scheduledFrame = 0;
@@ -194,37 +216,49 @@ export default function DesignModeOverlay() {
   useEffect(() => {
     if (!enabled) return undefined;
     const pointerDown = event => {
-      if (event.target.closest('[data-design-ui]')) return;
-      const surface = event.target.closest('[data-design-id]');
+      const path = event.composedPath().filter(node => node instanceof Element);
+      if (path.some(element => element.hasAttribute('data-design-ui'))) return;
+      const surface = path.find(element => element.hasAttribute('data-design-id'));
       if (!surface) return;
       event.preventDefault();
       event.stopPropagation();
       const id = surface.dataset.designId;
-      selectSurface(id);
       const editableText = collectEditableText(surface);
-      const clickedTextElement = event.target.closest('[data-design-text-key]');
+      const clickedTextElement = path.find(element => (
+        element.hasAttribute('data-design-text-key')
+        && element.closest('[data-design-id]') === surface
+      ));
       const clickedText = editableText.find(item => item.element === clickedTextElement) ?? null;
+      const sameSelection = selectedSurfaceId === id && (!clickedText || clickedText.key === selectedTextKey);
+      selectSurface(id);
       setTextOptions(editableText);
-      setSelectedTextKey(clickedText?.key ?? editableText[0]?.key ?? null);
+      setSelectedTextKey(clickedText?.key ?? null);
       const current = useDesignStore.getState();
       const currentProfile = selectActiveDesignProfile(current);
       const style = { ...DEFAULT_SURFACE_STYLE, ...currentProfile?.surfaces[id] };
       if (clickedText) {
-        const layout = { x: 0, y: 0, width: 0, height: 0, ...style.textLayouts?.[clickedText.key] };
+        const layout = { ...DEFAULT_TEXT_LAYOUT, ...style.textLayouts?.[clickedText.key] };
         dragRef.current = {
-          mode: 'text-move', id, textKey: clickedText.key,
+          mode: 'pending-text', canDrag: sameSelection, id, textKey: clickedText.key,
           startX: event.clientX, startY: event.clientY,
           layout, textLayouts: style.textLayouts ?? {},
         };
         return;
       }
-      dragRef.current = { mode: 'move', id, startX: event.clientX, startY: event.clientY, x: style.x, y: style.y };
+      dragRef.current = {
+        mode: 'pending-surface', canDrag: sameSelection, id,
+        startX: event.clientX, startY: event.clientY, x: style.x, y: style.y,
+      };
     };
     const pointerMove = event => {
       const drag = dragRef.current;
       if (!drag || !(event.buttons & 1)) return;
       const deltaX = event.clientX - drag.startX;
       const deltaY = event.clientY - drag.startY;
+      if (drag.mode.startsWith('pending-')) {
+        if (!drag.canDrag || Math.hypot(deltaX, deltaY) < 4) return;
+        drag.mode = drag.mode === 'pending-text' ? 'text-move' : 'move';
+      }
       if (drag.mode === 'text-move') {
         updateSurface(drag.id, { textLayouts: {
           ...drag.textLayouts,
@@ -260,15 +294,24 @@ export default function DesignModeOverlay() {
       });
     };
     const pointerUp = () => { dragRef.current = null; };
+    const blockInterfaceAction = event => {
+      const path = event.composedPath().filter(node => node instanceof Element);
+      if (path.some(element => element.hasAttribute('data-design-ui'))) return;
+      if (!path.some(element => element.hasAttribute('data-design-id'))) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
     document.addEventListener('pointerdown', pointerDown, true);
+    document.addEventListener('click', blockInterfaceAction, true);
     window.addEventListener('pointermove', pointerMove, true);
     window.addEventListener('pointerup', pointerUp, true);
     return () => {
       document.removeEventListener('pointerdown', pointerDown, true);
+      document.removeEventListener('click', blockInterfaceAction, true);
       window.removeEventListener('pointermove', pointerMove, true);
       window.removeEventListener('pointerup', pointerUp, true);
     };
-  }, [enabled, selectSurface, updateSurface]);
+  }, [enabled, selectSurface, selectedSurfaceId, selectedTextKey, updateSurface]);
 
   const beginResize = (event, corner) => {
     event.preventDefault();
@@ -287,13 +330,26 @@ export default function DesignModeOverlay() {
     };
   };
 
+  const beginSurfaceMove = event => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!selectedSurfaceId) return;
+    dragRef.current = {
+      mode: 'move',
+      id: selectedSurfaceId,
+      startX: event.clientX,
+      startY: event.clientY,
+      x: selectedStyle.x,
+      y: selectedStyle.y,
+    };
+  };
+
   const beginTextResize = (event, corner) => {
     event.preventDefault();
     event.stopPropagation();
     if (!selectedSurfaceId || !selectedText || !textSelectionRect) return;
     const layout = {
-      x: 0,
-      y: 0,
+      ...DEFAULT_TEXT_LAYOUT,
       width: textSelectionRect.width,
       height: textSelectionRect.height,
       ...selectedStyle.textLayouts?.[selectedText.key],
@@ -316,7 +372,7 @@ export default function DesignModeOverlay() {
     event.preventDefault();
     event.stopPropagation();
     if (!selectedSurfaceId || !selectedText) return;
-    const layout = { x: 0, y: 0, width: 0, height: 0, ...selectedStyle.textLayouts?.[selectedText.key] };
+    const layout = { ...DEFAULT_TEXT_LAYOUT, ...selectedStyle.textLayouts?.[selectedText.key] };
     dragRef.current = {
       mode: 'text-move',
       id: selectedSurfaceId,
@@ -356,8 +412,18 @@ export default function DesignModeOverlay() {
   const selectedTextSize = selectedText
     ? selectedStyle.textSizes?.[selectedText.key] ?? selectedText.defaultFontSize
     : 10;
+  const updateSelectedTextLayout = patch => {
+    if (!selectedText) return;
+    updateSurface(selectedSurfaceId, {
+      textLayouts: {
+        ...selectedStyle.textLayouts,
+        [selectedText.key]: { ...selectedTextLayout, ...patch },
+      },
+    });
+  };
   return <>
     {selectionRect && <div className="design-resize-frame" data-design-ui style={{ left: selectionRect.left, top: selectionRect.top, width: selectionRect.width, height: selectionRect.height }}>
+      <button className="design-move-handle" aria-label="Переместить панель" title="Перетащить панель" onPointerDown={beginSurfaceMove}>↔</button>
       {['nw', 'ne', 'sw', 'se'].map(corner => <button key={corner} className={`design-resize-handle is-${corner}`} aria-label={`Изменить размер ${corner}`} onPointerDown={event => beginResize(event, corner)} />)}
     </div>}
     {textSelectionRect && <div className="design-text-resize-frame" data-design-ui style={{ left: textSelectionRect.left, top: textSelectionRect.top, width: textSelectionRect.width, height: textSelectionRect.height }} onPointerDown={beginTextMove}>
@@ -365,7 +431,7 @@ export default function DesignModeOverlay() {
     </div>}
     <aside className={`design-inspector design-inspector--${inspectorSide.toLowerCase()}`} data-design-ui>
     <header><div><span>DESIGN MODE</span><strong>{selectedSurfaceId || 'Выберите панель'}</strong></div><nav><button title="Переместить инспектор" onClick={() => setInspectorSide(inspectorSide === 'RIGHT' ? 'LEFT' : 'RIGHT')}>{inspectorSide === 'RIGHT' ? '←' : '→'}</button><button onClick={() => setEnabled(false)}>×</button></nav></header>
-    <p>Клик — выбрать. Тяните панель для перемещения или золотой угол для изменения размера.</p>
+    <p>Первый клик выбирает панель или текст. Перемещайте выбранное за отдельную ручку, размер меняйте угловыми маркерами.</p>
     <label>Пресет<select value={profile?.id} onChange={event => { const next = profiles.find(item => item.id === event.target.value); setActiveProfile(event.target.value); setProfileName(next?.name ?? ''); }}>{profiles.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
     <div className="design-inspector__profile"><input value={profileName} onChange={event => setProfileName(event.target.value)} /><button onClick={() => renameActiveProfile(profileName)}>Сохранить имя</button><button onClick={() => { createProfile('Новый пресет'); setProfileName('Новый пресет'); }}>+ Пресет</button></div>
     {selectedSurfaceId ? <div className="design-inspector__fields">
@@ -375,7 +441,30 @@ export default function DesignModeOverlay() {
       <label>Направление градиента <b>{Math.round(selectedStyle.gradientAngle)}°</b><input type="range" min="0" max="360" step="1" value={selectedStyle.gradientAngle} onChange={event => updateSurface(selectedSurfaceId, { gradientAngle: event.target.value })} /></label>
       <label>Общая прозрачность <b>{Math.round(selectedStyle.opacity * 100)}%</b><input type="range" min="0.15" max="1" step="0.01" value={selectedStyle.opacity} onChange={event => updateSurface(selectedSurfaceId, { opacity: event.target.value })} /></label>
       <div className="design-inspector__numbers">{NUMBER_FIELDS.map(([id, label, min, max, step]) => <label key={id}>{label}<input type="number" min={min} max={max} step={step} value={selectedStyle[id]} onChange={event => updateSurface(selectedSurfaceId, { [id]: event.target.value })} /></label>)}</div>
-      {textOptions.length > 0 && <section className="design-inspector__text"><span>ТЕКСТ ПАНЕЛИ</span><select value={selectedText?.key ?? ''} onChange={event => setSelectedTextKey(event.target.value)}>{textOptions.map(item => <option value={item.key} key={item.key}>{item.label}</option>)}</select><textarea value={selectedTextValue} onChange={event => updateSurface(selectedSurfaceId, { textOverrides: { ...selectedStyle.textOverrides, [selectedText.key]: event.target.value } })} /><label>Размер текста <b>{selectedTextSize}px</b><input type="range" min="5" max="48" step="1" value={selectedTextSize} onChange={event => updateSurface(selectedSurfaceId, { textSizes: { ...selectedStyle.textSizes, [selectedText.key]: event.target.value } })} /></label><div className="design-inspector__text-layout">{[['x', 'X'], ['y', 'Y'], ['width', 'Ширина'], ['height', 'Высота']].map(([field, label]) => <label key={field}>{label}<input type="number" value={selectedStyle.textLayouts?.[selectedText.key]?.[field] ?? 0} onChange={event => updateSurface(selectedSurfaceId, { textLayouts: { ...selectedStyle.textLayouts, [selectedText.key]: { x: 0, y: 0, width: 0, height: 0, ...selectedStyle.textLayouts?.[selectedText.key], [field]: event.target.value } } })} /></label>)}</div><button onClick={() => {
+      {textOptions.length > 0 && <section className="design-inspector__text">
+        <span>ТЕКСТОВЫЙ БЛОК</span>
+        <select value={selectedText?.key ?? ''} onChange={event => setSelectedTextKey(event.target.value || null)}>
+          <option value="">Выберите текст на карточке…</option>
+          {textOptions.map(item => <option value={item.key} key={item.key}>{item.label}</option>)}
+        </select>
+        {selectedText && <>
+        <textarea value={selectedTextValue} onChange={event => updateSurface(selectedSurfaceId, { textOverrides: { ...selectedStyle.textOverrides, [selectedText.key]: event.target.value } })} />
+        <label>Размер текста <b>{selectedTextSize}px</b><input type="range" min="5" max="48" step="1" value={selectedTextSize} onChange={event => updateSurface(selectedSurfaceId, { textSizes: { ...selectedStyle.textSizes, [selectedText.key]: event.target.value } })} /></label>
+        <div className="design-inspector__text-colors">
+          <label>Фон<input type="color" value={selectedTextLayout.backgroundColor} onChange={event => updateSelectedTextLayout({ backgroundColor: event.target.value })} /></label>
+          <label>Текст<input type="color" value={selectedTextLayout.textColor} onChange={event => updateSelectedTextLayout({ textColor: event.target.value, useTextColor: true })} /></label>
+          <label>Рамка<input type="color" value={selectedTextLayout.borderColor} onChange={event => updateSelectedTextLayout({ borderColor: event.target.value })} /></label>
+        </div>
+        <label className="design-inspector__check"><input type="checkbox" checked={selectedTextLayout.useTextColor} onChange={event => updateSelectedTextLayout({ useTextColor: event.target.checked })} />Свой цвет текста</label>
+        <label>Прозрачность фона <b>{Math.round(selectedTextLayout.backgroundAlpha * 100)}%</b><input type="range" min="0" max="1" step="0.01" value={selectedTextLayout.backgroundAlpha} onChange={event => updateSelectedTextLayout({ backgroundAlpha: event.target.value })} /></label>
+        <label>Общая прозрачность <b>{Math.round(selectedTextLayout.opacity * 100)}%</b><input type="range" min="0.15" max="1" step="0.01" value={selectedTextLayout.opacity} onChange={event => updateSelectedTextLayout({ opacity: event.target.value })} /></label>
+        <div className="design-inspector__text-layout">
+          {[
+            ['x', 'X'], ['y', 'Y'], ['width', 'Ширина'], ['height', 'Высота'],
+            ['borderRadius', 'Скругление'], ['borderWidth', 'Рамка'], ['padding', 'Отступ'], ['blur', 'Стекло'],
+          ].map(([field, label]) => <label key={field}>{label}<input type="number" value={selectedTextLayout[field]} onChange={event => updateSelectedTextLayout({ [field]: event.target.value })} /></label>)}
+        </div>
+        <button onClick={() => {
         const textOverrides = { ...selectedStyle.textOverrides };
         const textSizes = { ...selectedStyle.textSizes };
         const textLayouts = { ...selectedStyle.textLayouts };
@@ -383,10 +472,11 @@ export default function DesignModeOverlay() {
         delete textSizes[selectedText.key];
         delete textLayouts[selectedText.key];
         updateSurface(selectedSurfaceId, { textOverrides, textSizes, textLayouts });
-      }}>Сбросить этот текст</button></section>}
+      }}>Сбросить этот текст</button></>}
+      </section>}
       <button className="is-danger" onClick={() => resetSurface(selectedSurfaceId)}>Сбросить эту панель</button>
     </div> : <div className="design-inspector__empty">Выберите подсвечиваемый элемент меню или HUD.</div>}
-    <footer><button onClick={download}>Экспорт JSON</button><label>Импорт JSON<input type="file" accept="application/json" onChange={importFile} /></label></footer>
+    <footer><button onClick={download}>Экспорт JSON</button><label>Импорт JSON<input type="file" accept="application/json" onChange={importFile} /></label><button className="is-danger" onClick={resetAllDesign}>Сбросить всё</button></footer>
     {message && <small>{message}</small>}
     </aside>
   </>;

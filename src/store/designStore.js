@@ -1,7 +1,24 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
-export const DESIGN_SCHEMA_VERSION = 1;
+export const DESIGN_SCHEMA_VERSION = 2;
+
+export const DEFAULT_TEXT_LAYOUT = Object.freeze({
+  x: 0,
+  y: 0,
+  width: 0,
+  height: 0,
+  backgroundColor: '#0a171c',
+  backgroundAlpha: 0,
+  textColor: '#edf2ee',
+  useTextColor: false,
+  borderColor: '#668087',
+  borderWidth: 0,
+  borderRadius: 0,
+  opacity: 1,
+  padding: 0,
+  blur: 0,
+});
 
 export const DEFAULT_SURFACE_STYLE = Object.freeze({
   x: 0,
@@ -47,10 +64,20 @@ export const normalizeSurfaceStyle = (style = {}) => ({
   textOverrides: Object.fromEntries(Object.entries(style.textOverrides ?? {}).filter(([key, value]) => key && typeof value === 'string')),
   textSizes: Object.fromEntries(Object.entries(style.textSizes ?? {}).filter(([key, value]) => key && Number.isFinite(Number(value))).map(([key, value]) => [key, normalizeNumber(value, 10, 5, 96)])),
   textLayouts: Object.fromEntries(Object.entries(style.textLayouts ?? {}).filter(([key, value]) => key && value && typeof value === 'object').map(([key, value]) => [key, {
-    x: normalizeNumber(value.x, 0, -1000, 1000),
-    y: normalizeNumber(value.y, 0, -1000, 1000),
-    width: normalizeNumber(value.width, 0, 0, 1200),
-    height: normalizeNumber(value.height, 0, 0, 800),
+    x: normalizeNumber(value.x, DEFAULT_TEXT_LAYOUT.x, -1000, 1000),
+    y: normalizeNumber(value.y, DEFAULT_TEXT_LAYOUT.y, -1000, 1000),
+    width: normalizeNumber(value.width, DEFAULT_TEXT_LAYOUT.width, 0, 1200),
+    height: normalizeNumber(value.height, DEFAULT_TEXT_LAYOUT.height, 0, 800),
+    backgroundColor: /^#[0-9a-f]{6}$/i.test(value.backgroundColor) ? value.backgroundColor : DEFAULT_TEXT_LAYOUT.backgroundColor,
+    backgroundAlpha: normalizeNumber(value.backgroundAlpha, DEFAULT_TEXT_LAYOUT.backgroundAlpha, 0, 1),
+    textColor: /^#[0-9a-f]{6}$/i.test(value.textColor) ? value.textColor : DEFAULT_TEXT_LAYOUT.textColor,
+    useTextColor: value.useTextColor === true,
+    borderColor: /^#[0-9a-f]{6}$/i.test(value.borderColor) ? value.borderColor : DEFAULT_TEXT_LAYOUT.borderColor,
+    borderWidth: normalizeNumber(value.borderWidth, DEFAULT_TEXT_LAYOUT.borderWidth, 0, 8),
+    borderRadius: normalizeNumber(value.borderRadius, DEFAULT_TEXT_LAYOUT.borderRadius, 0, 80),
+    opacity: normalizeNumber(value.opacity, DEFAULT_TEXT_LAYOUT.opacity, 0.15, 1),
+    padding: normalizeNumber(value.padding, DEFAULT_TEXT_LAYOUT.padding, 0, 48),
+    blur: normalizeNumber(value.blur, DEFAULT_TEXT_LAYOUT.blur, 0, 40),
   }])),
 });
 
@@ -88,6 +115,13 @@ export const useDesignStore = create(persist((set, get) => ({
       return { ...profile, surfaces };
     }),
   })),
+  resetAllDesign: () => set({
+    enabled: false,
+    inspectorSide: 'RIGHT',
+    selectedSurfaceId: null,
+    profiles: [createProfile()],
+    activeProfileId: 'custom',
+  }),
   createProfile: name => {
     const id = `DESIGN-${Date.now()}`;
     set(state => ({ profiles: [...state.profiles, createProfile(id, name?.trim() || 'Новый пресет')], activeProfileId: id, selectedSurfaceId: null }));
@@ -111,7 +145,7 @@ export const useDesignStore = create(persist((set, get) => ({
     return { schemaVersion: DESIGN_SCHEMA_VERSION, activeProfileId: state.activeProfileId, profiles: state.profiles };
   },
 }), {
-  name: 'sam-simulator-design-v1',
+  name: 'sam-simulator-design-v2',
   version: DESIGN_SCHEMA_VERSION,
   storage: createJSONStorage(() => localStorage),
   partialize: state => ({
