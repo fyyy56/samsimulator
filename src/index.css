@@ -635,7 +635,7 @@ button { font: inherit; }
 .reference-card--objective { min-height: 186px; padding-top: 18px; }
 .reference-card--objective code { display: block; margin-top: 10px; color: var(--text-muted); font-size: 8px; }
 .reference-card-open { overflow: hidden; }
-.content-modal { position: fixed; z-index: 20000; inset: 0; display: grid; place-items: center; box-sizing: border-box; padding: 16px; background: #030a0d; }
+.content-modal { position: fixed; z-index: 9000; inset: 0; display: grid; place-items: center; box-sizing: border-box; padding: 16px; background: #030a0d; }
 .content-modal article { position: relative; width: calc(100vw - 32px) !important; max-width: none; height: calc(100dvh - 32px) !important; max-height: none; box-sizing: border-box; padding: 0; overflow: hidden; transform: none !important; background: linear-gradient(145deg,rgba(11,26,32,.99),rgba(5,14,18,.99)); border: 1px solid var(--panel-border-active); border-radius: 22px; box-shadow: 0 24px 80px rgba(0,0,0,.62); }
 .content-modal__toolbar { position: absolute; z-index: 8; top: 12px; right: 12px; display: flex; gap: 5px; }.content-modal__toolbar .design-mode-button { padding: 0 10px; color: var(--text-secondary); background: rgba(0,0,0,.38); border: 1px solid var(--panel-border); border-radius: 16px; cursor: pointer; font: 650 7px/1 var(--mono-font); }.content-modal__close { position: static; width: 30px; height: 30px; padding: 0; color: var(--text-primary); background: rgba(0,0,0,.38); border: 1px solid var(--panel-border); border-radius: 50%; cursor: pointer; }
 .content-modal__art { display: grid; place-items: center; height: 190px; margin: -24px -24px 20px; background: radial-gradient(circle,rgba(119,167,151,.16),transparent 62%); border-bottom: 1px solid var(--panel-border); }
