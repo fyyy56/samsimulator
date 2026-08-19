@@ -1,7 +1,15 @@
 import { useMemo, useState } from 'react';
 import ContentShell from '../ui/ContentShell.jsx';
-import { CONTENT_CATEGORIES, getContentAsset, PACKAGED_CONTENT, POPULAR_TARGETS } from '../content/contentRegistry.js';
+import {
+  CONTENT_CATEGORIES,
+  getContentAsset,
+  getContentModelAsset,
+  PACKAGED_CONTENT,
+  POPULAR_TARGETS,
+} from '../content/contentRegistry.js';
 import DesignableSurface from '../ui/DesignableSurface.jsx';
+import { DesignModeButton } from '../ui/DesignModeOverlay.jsx';
+import ReferenceModelViewport from '../ui/ReferenceModelViewport.jsx';
 
 function ContentArtwork({ item }) {
   const asset = getContentAsset(item);
@@ -36,13 +44,22 @@ export default function ReferenceScene() {
         <div className="reference-grid">{visible.map(item => <ReferenceCard key={item.id} item={item} onSelect={setSelected} />)}</div>
       </> : <div className="reference-grid reference-grid--targets">{POPULAR_TARGETS.map(item => <ReferenceCard key={item.id} item={item} objective onSelect={setSelected} />)}</div>}
       {selected && <div className="content-modal" role="dialog" aria-modal="true" onMouseDown={() => setSelected(null)}>
-        <DesignableSurface as="article" designId={`reference-detail-${selected.id}`} designName={`Карточка ${selected.name}`} onMouseDown={event => event.stopPropagation()}>
-          <button className="content-modal__close" onClick={() => setSelected(null)}>×</button>
-          {'kind' in selected && <div className="content-modal__art"><ContentArtwork item={selected} /></div>}
-          <span>{selected.category ?? selected.type}</span><h2>{selected.name}</h2><p>{selected.role ?? selected.description}</p>
-          {selected.type && <dl><dt>Тип</dt><dd>{selected.type}</dd>{selected.rangeKm && <><dt>Дальность</dt><dd>{selected.rangeKm}</dd></>}</dl>}
-          {selected.features?.length > 0 && <ul>{selected.features.map(feature => <li key={feature}>{feature}</li>)}</ul>}
-          {selected.position && <code>{selected.position.lat.toFixed(5)}, {selected.position.lng.toFixed(5)}</code>}
+        <DesignableSurface as="article" designId={`reference-detail-${selected.id}`} designName={`Карточка ${selected.name}`} className="reference-detail" onMouseDown={event => event.stopPropagation()}>
+          <div className="content-modal__toolbar" data-design-ui>
+            <DesignModeButton compact />
+            <button className="content-modal__close" onClick={() => setSelected(null)}>×</button>
+          </div>
+          <ReferenceModelViewport
+            item={selected}
+            modelUrl={getContentModelAsset(selected)}
+            fallbackAsset={getContentAsset(selected)}
+          />
+          <div className="reference-detail__info">
+            <span>{selected.category ?? selected.type}</span><h2>{selected.name}</h2><p>{selected.role ?? selected.description}</p>
+            {selected.type && <dl><dt>Тип</dt><dd>{selected.type}</dd>{selected.rangeKm && <><dt>Дальность</dt><dd>{selected.rangeKm}</dd></>}</dl>}
+            {selected.features?.length > 0 && <ul>{selected.features.map(feature => <li key={feature}>{feature}</li>)}</ul>}
+            {selected.position && <code>{selected.position.lat.toFixed(5)}, {selected.position.lng.toFixed(5)}</code>}
+          </div>
         </DesignableSurface>
       </div>}
     </ContentShell>

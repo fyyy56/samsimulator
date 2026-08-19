@@ -59,7 +59,8 @@ const collectEditableText = surface => {
     const occurrence = occurrences.get(baseKey) ?? 0;
     occurrences.set(baseKey, occurrence + 1);
     const items = getDirectTextSegments(element).map((nodes, segmentIndex) => {
-      const key = `${baseKey}-${occurrence}-${segmentIndex}`;
+      const key = element.dataset.designCustomTextKey
+        ?? `${baseKey}-${occurrence}-${segmentIndex}`;
       if (!originalTextByNode.has(nodes[0])) originalTextByNode.set(nodes[0], readTextSegment(nodes));
       const originalText = originalTextByNode.get(nodes[0]);
       return {
@@ -79,6 +80,27 @@ const collectEditableText = surface => {
 const applyTextConfiguration = profile => {
   document.querySelectorAll('[data-design-id]').forEach(surface => {
     const style = profile?.surfaces[surface.dataset.designId];
+    const customTextKeys = style?.customTextKeys ?? [];
+    const existingCustomText = new Map(
+      [...surface.querySelectorAll(':scope > [data-design-custom-text]')]
+        .map(element => [element.dataset.designCustomTextKey, element]),
+    );
+    existingCustomText.forEach((element, key) => {
+      if (!customTextKeys.includes(key)) element.remove();
+    });
+    customTextKeys.forEach(key => {
+      if (existingCustomText.has(key)) return;
+      const element = document.createElement('span');
+      element.className = 'design-custom-text';
+      element.dataset.designCustomText = 'true';
+      element.dataset.designCustomTextKey = key;
+      element.dataset.designTextKey = key;
+      element.textContent = style?.textOverrides?.[key] ?? 'Новый текст';
+      surface.append(element);
+    });
+    if (customTextKeys.length > 0 && getComputedStyle(surface).position === 'static') {
+      surface.style.position = 'relative';
+    }
     const items = collectEditableText(surface);
     const elements = [...new Set(items.map(item => item.element))];
     elements.forEach(element => {
@@ -92,7 +114,11 @@ const applyTextConfiguration = profile => {
       element.style.transform = layout ? `translate(${layout.x}px, ${layout.y}px)` : '';
       element.style.width = layout?.width > 0 ? `${layout.width}px` : '';
       element.style.height = layout?.height > 0 ? `${layout.height}px` : '';
-      element.style.position = layout ? 'relative' : '';
+      element.style.position = element.dataset.designCustomText
+        ? 'absolute'
+        : (layout ? 'relative' : '');
+      element.style.left = element.dataset.designCustomText ? '0' : '';
+      element.style.top = element.dataset.designCustomText ? '0' : '';
       element.style.zIndex = layout ? '2' : '';
       element.style.display = layout ? 'inline-block' : '';
       element.style.boxSizing = layout ? 'border-box' : '';
@@ -160,6 +186,21 @@ export default function DesignModeOverlay() {
       if (scheduledFrame) window.cancelAnimationFrame(scheduledFrame);
     };
   }, [profile]);
+
+  useEffect(() => {
+    if (!enabled || !selectedSurfaceId) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      const surface = [...document.querySelectorAll('[data-design-id]')]
+        .find(candidate => candidate.dataset.designId === selectedSurfaceId);
+      if (!surface) return;
+      const nextOptions = collectEditableText(surface);
+      setTextOptions(nextOptions);
+      setSelectedTextKey(currentKey => (
+        nextOptions.some(item => item.key === currentKey) ? currentKey : null
+      ));
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [enabled, profile, selectedSurfaceId]);
 
   useEffect(() => {
     if (!enabled || !selectedSurfaceId) {
@@ -421,6 +462,35 @@ export default function DesignModeOverlay() {
       },
     });
   };
+  const addFreeText = () => {
+    const key = `custom-${Date.now()}-${selectedStyle.customTextKeys.length + 1}`;
+    updateSurface(selectedSurfaceId, {
+      customTextKeys: [...selectedStyle.customTextKeys, key],
+      textOverrides: { ...selectedStyle.textOverrides, [key]: 'Новый текст' },
+      textSizes: { ...selectedStyle.textSizes, [key]: 14 },
+      textLayouts: {
+        ...selectedStyle.textLayouts,
+        [key]: { ...DEFAULT_TEXT_LAYOUT, x: 20, y: 20, width: 160, height: 36 },
+      },
+    });
+    setSelectedTextKey(key);
+  };
+  const removeFreeText = () => {
+    if (!selectedText || !selectedStyle.customTextKeys.includes(selectedText.key)) return;
+    const textOverrides = { ...selectedStyle.textOverrides };
+    const textSizes = { ...selectedStyle.textSizes };
+    const textLayouts = { ...selectedStyle.textLayouts };
+    delete textOverrides[selectedText.key];
+    delete textSizes[selectedText.key];
+    delete textLayouts[selectedText.key];
+    updateSurface(selectedSurfaceId, {
+      customTextKeys: selectedStyle.customTextKeys.filter(key => key !== selectedText.key),
+      textOverrides,
+      textSizes,
+      textLayouts,
+    });
+    setSelectedTextKey(null);
+  };
   return <>
     {selectionRect && <div className="design-resize-frame" data-design-ui style={{ left: selectionRect.left, top: selectionRect.top, width: selectionRect.width, height: selectionRect.height }}>
       <button className="design-move-handle" aria-label="Переместить панель" title="Перетащить панель" onPointerDown={beginSurfaceMove}>↔</button>
@@ -441,6 +511,7 @@ export default function DesignModeOverlay() {
       <label>Направление градиента <b>{Math.round(selectedStyle.gradientAngle)}°</b><input type="range" min="0" max="360" step="1" value={selectedStyle.gradientAngle} onChange={event => updateSurface(selectedSurfaceId, { gradientAngle: event.target.value })} /></label>
       <label>Общая прозрачность <b>{Math.round(selectedStyle.opacity * 100)}%</b><input type="range" min="0.15" max="1" step="0.01" value={selectedStyle.opacity} onChange={event => updateSurface(selectedSurfaceId, { opacity: event.target.value })} /></label>
       <div className="design-inspector__numbers">{NUMBER_FIELDS.map(([id, label, min, max, step]) => <label key={id}>{label}<input type="number" min={min} max={max} step={step} value={selectedStyle[id]} onChange={event => updateSurface(selectedSurfaceId, { [id]: event.target.value })} /></label>)}</div>
+      <button className="design-add-text" onClick={addFreeText}>+ Добавить свободный текст</button>
       {textOptions.length > 0 && <section className="design-inspector__text">
         <span>ТЕКСТОВЫЙ БЛОК</span>
         <select value={selectedText?.key ?? ''} onChange={event => setSelectedTextKey(event.target.value || null)}>
@@ -472,7 +543,8 @@ export default function DesignModeOverlay() {
         delete textSizes[selectedText.key];
         delete textLayouts[selectedText.key];
         updateSurface(selectedSurfaceId, { textOverrides, textSizes, textLayouts });
-      }}>Сбросить этот текст</button></>}
+      }}>Сбросить этот текст</button>
+      {selectedStyle.customTextKeys.includes(selectedText.key) && <button className="is-danger" onClick={removeFreeText}>Удалить этот текст</button>}</>}
       </section>}
       <button className="is-danger" onClick={() => resetSurface(selectedSurfaceId)}>Сбросить эту панель</button>
     </div> : <div className="design-inspector__empty">Выберите подсвечиваемый элемент меню или HUD.</div>}

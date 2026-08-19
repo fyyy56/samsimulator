@@ -39,6 +39,7 @@ export const DEFAULT_SURFACE_STYLE = Object.freeze({
   textOverrides: {},
   textSizes: {},
   textLayouts: {},
+  customTextKeys: [],
 });
 
 const normalizeNumber = (value, fallback, minimum = -Infinity, maximum = Infinity) => (
@@ -63,6 +64,9 @@ export const normalizeSurfaceStyle = (style = {}) => ({
   blur: normalizeNumber(style.blur, 12, 0, 40),
   textOverrides: Object.fromEntries(Object.entries(style.textOverrides ?? {}).filter(([key, value]) => key && typeof value === 'string')),
   textSizes: Object.fromEntries(Object.entries(style.textSizes ?? {}).filter(([key, value]) => key && Number.isFinite(Number(value))).map(([key, value]) => [key, normalizeNumber(value, 10, 5, 96)])),
+  customTextKeys: [...new Set((style.customTextKeys ?? []).filter(key => (
+    typeof key === 'string' && key.startsWith('custom-')
+  )))],
   textLayouts: Object.fromEntries(Object.entries(style.textLayouts ?? {}).filter(([key, value]) => key && value && typeof value === 'object').map(([key, value]) => [key, {
     x: normalizeNumber(value.x, DEFAULT_TEXT_LAYOUT.x, -1000, 1000),
     y: normalizeNumber(value.y, DEFAULT_TEXT_LAYOUT.y, -1000, 1000),
