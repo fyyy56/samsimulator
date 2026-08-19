@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   DEFAULT_SURFACE_STYLE,
   DEFAULT_TEXT_LAYOUT,
@@ -13,7 +13,7 @@ const NUMBER_FIELDS = [
   ['blur', 'Размытие', 0, 40, 1],
 ];
 
-const TEXT_ELEMENT_SELECTOR = 'span,strong,b,small,p,h1,h2,h3,h4,label,button,code,time';
+const TEXT_ELEMENT_SELECTOR = 'span,strong,b,small,p,h1,h2,h3,h4,h5,h6,label,button,code,time,li,dt,dd,a,em,i,u,s,mark,figcaption,legend';
 
 const originalTextByNode = new WeakMap();
 
@@ -54,7 +54,9 @@ const collectEditableText = surface => {
     ));
   const occurrences = new Map();
   return elements.flatMap(element => {
-    const classToken = [...element.classList].find(value => !value.startsWith('is-'));
+    const classToken = [...element.classList].find(value => (
+      !value.startsWith('is-') && !value.startsWith('design-')
+    ));
     const baseKey = element.id || classToken || element.tagName.toLowerCase();
     const occurrence = occurrences.get(baseKey) ?? 0;
     occurrences.set(baseKey, occurrence + 1);
@@ -135,7 +137,9 @@ const applyTextConfiguration = profile => {
       element.style.backdropFilter = layout?.blur > 0 ? `blur(${layout.blur}px)` : '';
     });
     items.forEach(item => {
-      writeTextSegment(item.nodes, style?.textOverrides?.[item.key] ?? item.originalText);
+      if (!item.element.isContentEditable) {
+        writeTextSegment(item.nodes, style?.textOverrides?.[item.key] ?? item.originalText);
+      }
     });
   });
 };
@@ -163,12 +167,83 @@ export default function DesignModeOverlay() {
   const [textSelectionRect, setTextSelectionRect] = useState(null);
   const [textOptions, setTextOptions] = useState([]);
   const [selectedTextKey, setSelectedTextKey] = useState(null);
+  const [editingTextKey, setEditingTextKey] = useState(null);
   const dragRef = useRef(null);
+  const editingRef = useRef(null);
   const selectedStyle = useMemo(() => ({ ...DEFAULT_SURFACE_STYLE, ...profile?.surfaces[selectedSurfaceId] }), [profile, selectedSurfaceId]);
-  const selectedText = textOptions.find(item => item.key === selectedTextKey) ?? textOptions[0] ?? null;
+  const selectedText = selectedTextKey
+    ? textOptions.find(item => item.key === selectedTextKey) ?? null
+    : null;
   const selectedTextLayout = selectedText
     ? { ...DEFAULT_TEXT_LAYOUT, ...selectedStyle.textLayouts?.[selectedText.key] }
     : DEFAULT_TEXT_LAYOUT;
+
+  const finishInlineEdit = useCallback((save = true) => {
+    const editing = editingRef.current;
+    if (!editing) return;
+    const { element, id, item, previousValue } = editing;
+    const value = save
+      ? (element.innerText ?? element.textContent ?? '').replace(/\u00a0/g, ' ').trim()
+      : previousValue;
+    element.removeAttribute('contenteditable');
+    element.removeAttribute('spellcheck');
+    element.classList.remove('design-inline-editing');
+    const currentSegments = getDirectTextSegments(element);
+    const targetNodes = currentSegments[0] ?? item.nodes.filter(node => node.isConnected);
+    if (targetNodes.length) writeTextSegment(targetNodes, value);
+    else element.append(document.createTextNode(value));
+    const nextTextNode = [...element.childNodes].find(node => node.nodeType === Node.TEXT_NODE);
+    if (nextTextNode) originalTextByNode.set(nextTextNode, item.originalText);
+    editingRef.current = null;
+    setEditingTextKey(null);
+    if (save) {
+      const current = useDesignStore.getState();
+      const currentProfile = selectActiveDesignProfile(current);
+      const style = { ...DEFAULT_SURFACE_STYLE, ...currentProfile?.surfaces[id] };
+      updateSurface(id, {
+        textOverrides: { ...style.textOverrides, [item.key]: value },
+      });
+    }
+  }, [updateSurface]);
+
+  const beginInlineEdit = useCallback((item, id, pointerEvent) => {
+    if (!item?.element) return;
+    if (editingRef.current?.item.key === item.key && editingRef.current?.id === id) return;
+    finishInlineEdit(true);
+    const current = useDesignStore.getState();
+    const currentProfile = selectActiveDesignProfile(current);
+    const style = { ...DEFAULT_SURFACE_STYLE, ...currentProfile?.surfaces[id] };
+    const previousValue = style.textOverrides?.[item.key] ?? item.originalText;
+    const element = item.element;
+    editingRef.current = { element, id, item, previousValue };
+    setEditingTextKey(item.key);
+    element.setAttribute('contenteditable', 'true');
+    element.setAttribute('spellcheck', 'false');
+    element.classList.add('design-inline-editing');
+    element.focus({ preventScroll: true });
+    window.requestAnimationFrame(() => {
+      const selection = window.getSelection();
+      if (!selection || !element.isConnected) return;
+      let range = document.caretRangeFromPoint?.(pointerEvent.clientX, pointerEvent.clientY);
+      if (!range && document.caretPositionFromPoint) {
+        const position = document.caretPositionFromPoint(pointerEvent.clientX, pointerEvent.clientY);
+        if (position) {
+          range = document.createRange();
+          range.setStart(position.offsetNode, position.offset);
+          range.collapse(true);
+        }
+      }
+      selection.removeAllRanges();
+      if (range && element.contains(range.startContainer)) {
+        selection.addRange(range);
+      } else {
+        const fallbackRange = document.createRange();
+        fallbackRange.selectNodeContents(element);
+        fallbackRange.collapse(false);
+        selection.addRange(fallbackRange);
+      }
+    });
+  }, [finishInlineEdit]);
 
   useEffect(() => {
     let scheduledFrame = 0;
@@ -178,9 +253,10 @@ export default function DesignModeOverlay() {
     };
     apply();
     const observer = new MutationObserver(() => {
+      if (editingRef.current) return;
       if (!scheduledFrame) scheduledFrame = window.requestAnimationFrame(apply);
     });
-    observer.observe(document.getElementById('root'), { subtree: true, childList: true, characterData: true });
+    observer.observe(document.body, { subtree: true, childList: true, characterData: true });
     return () => {
       observer.disconnect();
       if (scheduledFrame) window.cancelAnimationFrame(scheduledFrame);
@@ -255,12 +331,27 @@ export default function DesignModeOverlay() {
   }, [enabled, selectedSurfaceId]);
 
   useEffect(() => {
+    if (!enabled) finishInlineEdit(true);
+  }, [enabled, finishInlineEdit]);
+
+  useEffect(() => {
     if (!enabled) return undefined;
     const pointerDown = event => {
       const path = event.composedPath().filter(node => node instanceof Element);
+      const activeEditor = editingRef.current;
+      if (activeEditor && path.includes(activeEditor.element)) return;
+      const clickedModelCanvas = path.some(element => element.hasAttribute('data-design-model-canvas'));
+      if (activeEditor && clickedModelCanvas) {
+        finishInlineEdit(true);
+        setSelectedTextKey(null);
+      }
       if (path.some(element => element.hasAttribute('data-design-ui'))) return;
+      if (activeEditor) finishInlineEdit(true);
       const surface = path.find(element => element.hasAttribute('data-design-id'));
-      if (!surface) return;
+      if (!surface) {
+        setSelectedTextKey(null);
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       const id = surface.dataset.designId;
@@ -268,9 +359,17 @@ export default function DesignModeOverlay() {
       const clickedTextElement = path.find(element => (
         element.hasAttribute('data-design-text-key')
         && element.closest('[data-design-id]') === surface
+      )) ?? path.find(element => (
+        element.matches?.(TEXT_ELEMENT_SELECTOR)
+        && element.closest('[data-design-id]') === surface
+        && getDirectTextSegments(element).length > 0
       ));
-      const clickedText = editableText.find(item => item.element === clickedTextElement) ?? null;
-      const sameSelection = selectedSurfaceId === id && (!clickedText || clickedText.key === selectedTextKey);
+      const clickedText = editableText.find(item => (
+        item.element === clickedTextElement
+        || path.includes(item.element)
+        || (event.target instanceof Node && item.element.contains(event.target))
+      )) ?? null;
+      const sameSurfaceSelection = selectedSurfaceId === id;
       selectSurface(id);
       setTextOptions(editableText);
       setSelectedTextKey(clickedText?.key ?? null);
@@ -278,16 +377,12 @@ export default function DesignModeOverlay() {
       const currentProfile = selectActiveDesignProfile(current);
       const style = { ...DEFAULT_SURFACE_STYLE, ...currentProfile?.surfaces[id] };
       if (clickedText) {
-        const layout = { ...DEFAULT_TEXT_LAYOUT, ...style.textLayouts?.[clickedText.key] };
-        dragRef.current = {
-          mode: 'pending-text', canDrag: sameSelection, id, textKey: clickedText.key,
-          startX: event.clientX, startY: event.clientY,
-          layout, textLayouts: style.textLayouts ?? {},
-        };
+        beginInlineEdit(clickedText, id, event);
         return;
       }
+      setSelectedTextKey(null);
       dragRef.current = {
-        mode: 'pending-surface', canDrag: sameSelection, id,
+        mode: 'pending-surface', canDrag: sameSurfaceSelection, id,
         startX: event.clientX, startY: event.clientY, x: style.x, y: style.y,
       };
     };
@@ -338,6 +433,7 @@ export default function DesignModeOverlay() {
     const blockInterfaceAction = event => {
       const path = event.composedPath().filter(node => node instanceof Element);
       if (path.some(element => element.hasAttribute('data-design-ui'))) return;
+      if (path.some(element => element.classList.contains('design-inline-editing'))) return;
       if (!path.some(element => element.hasAttribute('data-design-id'))) return;
       event.preventDefault();
       event.stopPropagation();
@@ -352,7 +448,34 @@ export default function DesignModeOverlay() {
       window.removeEventListener('pointermove', pointerMove, true);
       window.removeEventListener('pointerup', pointerUp, true);
     };
-  }, [enabled, selectSurface, selectedSurfaceId, selectedTextKey, updateSurface]);
+  }, [beginInlineEdit, enabled, finishInlineEdit, selectSurface, selectedSurfaceId, selectedTextKey, updateSurface]);
+
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const keyDown = event => {
+      if (!editingRef.current) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        finishInlineEdit(false);
+      } else if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        finishInlineEdit(true);
+      }
+    };
+    document.addEventListener('keydown', keyDown, true);
+    return () => document.removeEventListener('keydown', keyDown, true);
+  }, [enabled, finishInlineEdit]);
+
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const focusOut = event => {
+      if (editingRef.current?.element !== event.target) return;
+      finishInlineEdit(true);
+      setSelectedTextKey(null);
+    };
+    document.addEventListener('focusout', focusOut, true);
+    return () => document.removeEventListener('focusout', focusOut, true);
+  }, [enabled, finishInlineEdit]);
 
   const beginResize = (event, corner) => {
     event.preventDefault();
@@ -496,12 +619,12 @@ export default function DesignModeOverlay() {
       <button className="design-move-handle" aria-label="Переместить панель" title="Перетащить панель" onPointerDown={beginSurfaceMove}>↔</button>
       {['nw', 'ne', 'sw', 'se'].map(corner => <button key={corner} className={`design-resize-handle is-${corner}`} aria-label={`Изменить размер ${corner}`} onPointerDown={event => beginResize(event, corner)} />)}
     </div>}
-    {textSelectionRect && <div className="design-text-resize-frame" data-design-ui style={{ left: textSelectionRect.left, top: textSelectionRect.top, width: textSelectionRect.width, height: textSelectionRect.height }} onPointerDown={beginTextMove}>
+    {textSelectionRect && editingTextKey !== selectedText?.key && <div className="design-text-resize-frame" data-design-ui style={{ left: textSelectionRect.left, top: textSelectionRect.top, width: textSelectionRect.width, height: textSelectionRect.height }} onPointerDown={beginTextMove}>
       {['nw', 'ne', 'sw', 'se'].map(corner => <button key={corner} className={`design-text-resize-handle is-${corner}`} aria-label={`Изменить текст ${corner}`} onPointerDown={event => beginTextResize(event, corner)} />)}
     </div>}
     <aside className={`design-inspector design-inspector--${inspectorSide.toLowerCase()}`} data-design-ui>
     <header><div><span>DESIGN MODE</span><strong>{selectedSurfaceId || 'Выберите панель'}</strong></div><nav><button title="Переместить инспектор" onClick={() => setInspectorSide(inspectorSide === 'RIGHT' ? 'LEFT' : 'RIGHT')}>{inspectorSide === 'RIGHT' ? '←' : '→'}</button><button onClick={() => setEnabled(false)}>×</button></nav></header>
-    <p>Первый клик выбирает панель или текст. Перемещайте выбранное за отдельную ручку, размер меняйте угловыми маркерами.</p>
+    <p>Клик по тексту редактирует его прямо на экране. Клик снаружи сохраняет. Enter — сохранить, Escape — отменить. Рамки и панели перемещаются отдельными ручками.</p>
     <label>Пресет<select value={profile?.id} onChange={event => { const next = profiles.find(item => item.id === event.target.value); setActiveProfile(event.target.value); setProfileName(next?.name ?? ''); }}>{profiles.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
     <div className="design-inspector__profile"><input value={profileName} onChange={event => setProfileName(event.target.value)} /><button onClick={() => renameActiveProfile(profileName)}>Сохранить имя</button><button onClick={() => { createProfile('Новый пресет'); setProfileName('Новый пресет'); }}>+ Пресет</button></div>
     {selectedSurfaceId ? <div className="design-inspector__fields">

@@ -87,6 +87,7 @@ export default function ReferenceModelViewport({ item, modelUrl = null, fallback
           dragging = true;
           dragX = event.clientX;
           dragY = event.clientY;
+          canvas.focus({ preventScroll: true });
           canvas.setPointerCapture(event.pointerId);
           event.preventDefault();
           event.stopPropagation();
@@ -191,7 +192,7 @@ export default function ReferenceModelViewport({ item, modelUrl = null, fallback
   };
 
   return <section className={`reference-model ${activeModelUrl ? 'has-model' : 'is-empty'}`}>
-    <canvas ref={canvasRef} data-design-ui aria-label={`3D-модель ${item.name}`} />
+    <canvas ref={canvasRef} data-design-ui data-design-model-canvas tabIndex={-1} aria-label={`3D-модель ${item.name}`} />
     {!activeModelUrl && <div className="reference-model__placeholder">
       {fallbackAsset && <img src={fallbackAsset.src} alt="" />}
       <span>3D MODEL SLOT</span>
