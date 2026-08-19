@@ -1599,6 +1599,17 @@ export const useEngine = create((set, get) => ({
       const timeSinceClosestApproachSec = improvedApproach
         ? 0
         : missile.timeSinceClosestApproachSec + deltaTimeSec;
+      const bearingToTarget = getBearing(
+        nextLat,
+        nextLng,
+        target.position.lat,
+        target.position.lng,
+      );
+      const targetRelativeHeadingDeg = getHeadingChangeDeg(
+        guidance.heading,
+        bearingToTarget,
+      );
+      const hasPassedTarget = targetRelativeHeadingDeg > 100;
 
       if (
         sweptApproach.intersects
@@ -1657,6 +1668,7 @@ export const useEngine = create((set, get) => ({
       } else if (
         closestApproachKm <= physics.terminalRangeKm * 1.5
         && timeSinceClosestApproachSec >= physics.postPassContinueSec
+        && hasPassedTarget
       ) {
         emitEvent(EVENT_TYPE.INTERCEPTOR_FAILED, {
           missileId: missile.id,

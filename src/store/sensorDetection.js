@@ -208,12 +208,30 @@ export function applySensorScanOpportunities({
   existingTrack = null,
 }) {
   const thresholds = getSensorEvidenceThresholds(target);
-  const contact = existingContact ?? createEmptySensorContact({
+  const emptyContact = createEmptySensorContact({
     battery,
     target,
     simulationTime,
     thresholds,
   });
+  const isNetworkHandoff = !existingContact
+    && existingTrack != null
+    && existingTrack.sourceBatteryId !== battery.id;
+  const retainedHandoffEvidence = isNetworkHandoff
+    ? Math.max(
+      thresholds.detected * SENSOR_EVIDENCE_CONFIG.networkHandoffEvidenceFloorFraction,
+      (existingTrack.detectionEvidence ?? thresholds.detected)
+        * SENSOR_EVIDENCE_CONFIG.networkHandoffEvidenceRetention,
+    )
+    : 0;
+  const contact = existingContact ?? (isNetworkHandoff ? {
+    ...emptyContact,
+    evidence: Math.min(SENSOR_EVIDENCE_CONFIG.maximumEvidence, retainedHandoffEvidence),
+    stage: getSensorEvidenceStage(retainedHandoffEvidence, thresholds),
+    confirmedBefore: true,
+    firstConfirmedTime: existingTrack.lastUpdateTime ?? simulationTime,
+    broadClassification: existingTrack.classifiedType ?? null,
+  } : emptyContact);
   const measurement = calculateSensorEvidenceContribution({
     battery,
     target,

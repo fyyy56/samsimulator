@@ -260,6 +260,15 @@ export function advanceInterceptorGuidance({
   const headingCorrectionDeg = normalizeHeadingDelta(
     guidance.commandHeading - interceptor.heading,
   );
+  const bearingToTrack = getBearing(
+    interceptor.lat,
+    interceptor.lng,
+    coastedTrackPosition.lat,
+    coastedTrackPosition.lng,
+  );
+  const trackRelativeHeadingDeg = normalizeHeadingDelta(
+    bearingToTrack - interceptor.heading,
+  );
   const excessiveCorrection = Math.abs(headingCorrectionDeg)
     > (physics.maximumGuidanceCorrectionDeg ?? 105);
   guidance.excessiveCorrectionSince = excessiveCorrection
@@ -271,6 +280,7 @@ export function advanceInterceptorGuidance({
   if (
     interceptor.flightTime >= (physics.guidanceGeometryCheckDelaySec ?? 2)
     && excessiveCorrectionDurationSec >= (physics.geometryLossGraceSec ?? 0.35)
+    && Math.abs(trackRelativeHeadingDeg) > 100
   ) {
     return {
       guidance,

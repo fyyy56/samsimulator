@@ -20,6 +20,8 @@ export const SENSOR_EVIDENCE_CONFIG = Object.freeze({
   staleContactRetentionSec: 45,
   trackCoastTimeSec: 6.5,
   secondarySensorFusionWeight: 0.28,
+  networkHandoffEvidenceRetention: 0.75,
+  networkHandoffEvidenceFloorFraction: 0.96,
 });
 
 export const RADAR_SENSOR_PROFILE_ID = Object.freeze({

@@ -8,6 +8,7 @@ export const RADAR_SCAN_TYPE = Object.freeze({
 });
 
 export const ELECTRONIC_PULSE_DURATION_SEC = 0.45;
+const NETWORK_HANDOFF_RANGE_ADVANTAGE = 0.18;
 
 const normalizeDegrees = angle => ((angle % 360) + 360) % 360;
 
@@ -139,25 +140,47 @@ export function selectNetworkRadarScanOpportunity(
   const preferredBattery = preferredSourceBatteryId
     ? batteries.find(battery => battery.id === preferredSourceBatteryId)
     : null;
-  if (preferredBattery && isTargetInRadarCoverage(preferredBattery, target)) {
-    const opportunityCount = countRadarMeasurements(preferredBattery, target);
-    return opportunityCount > 0 ? { battery: preferredBattery, opportunityCount } : null;
-  }
-
-  let selectedOpportunity = null;
-  batteries.forEach(battery => {
+  const candidates = batteries.flatMap(battery => {
     const opportunityCount = countRadarMeasurements(battery, target);
-    if (opportunityCount <= 0) return;
+    if (opportunityCount <= 0) return [];
     const radar = battery.components.radar;
     const distanceKm = getDistanceKm(radar.lat, radar.lng, target.position.lat, target.position.lng);
     const normalizedRange = distanceKm / Math.max(1, battery.radarRangeKm);
     const score = opportunityCount * 10
       + (battery.radarScanType === RADAR_SCAN_TYPE.ELECTRONIC_SECTOR ? 4 : 0)
       + (1 - normalizedRange);
-    if (!selectedOpportunity || score > selectedOpportunity.score) {
-      selectedOpportunity = { battery, opportunityCount, score };
-    }
+    return [{ battery, opportunityCount, score, normalizedRange }];
   });
+  const selectedOpportunity = candidates.sort((first, second) => (
+    second.score - first.score || first.battery.id.localeCompare(second.battery.id)
+  ))[0] ?? null;
+
+  if (preferredBattery && isTargetInRadarCoverage(preferredBattery, target)) {
+    const preferredOpportunity = candidates.find(candidate => (
+      candidate.battery.id === preferredBattery.id
+    ));
+    if (preferredOpportunity) {
+      return {
+        battery: preferredOpportunity.battery,
+        opportunityCount: preferredOpportunity.opportunityCount,
+      };
+    }
+    if (!selectedOpportunity) return null;
+    const preferredRadar = preferredBattery.components.radar;
+    const preferredDistanceKm = getDistanceKm(
+      preferredRadar.lat,
+      preferredRadar.lng,
+      target.position.lat,
+      target.position.lng,
+    );
+    const preferredNormalizedRange = preferredDistanceKm
+      / Math.max(1, preferredBattery.radarRangeKm);
+    if (
+      selectedOpportunity.normalizedRange + NETWORK_HANDOFF_RANGE_ADVANTAGE
+      >= preferredNormalizedRange
+    ) return null;
+  }
+
   if (!selectedOpportunity) return null;
   return {
     battery: selectedOpportunity.battery,
