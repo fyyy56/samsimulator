@@ -30,6 +30,12 @@ export default function ReferenceModelViewport({ item, modelUrl = null, fallback
     let baseModelMatrix = null;
     let CesiumApi = null;
     let cameraFramed = false;
+    let frameSphere = null;
+    let removeInputListeners = null;
+    let dragging = false;
+    let dragX = 0;
+    let dragY = 0;
+    const view = { heading: 0.65, pitch: -0.28, range: 45 };
     const startedAt = performance.now();
 
     const initialize = async () => {
@@ -65,11 +71,63 @@ export default function ReferenceModelViewport({ item, modelUrl = null, fallback
           origin,
           new CesiumApi.HeadingPitchRange(0.65, -0.28, 45),
         );
-        scene.screenSpaceCameraController.enableZoom = true;
-        scene.screenSpaceCameraController.enableRotate = true;
-        scene.screenSpaceCameraController.enableTilt = true;
+        scene.screenSpaceCameraController.enableInputs = false;
         scene.screenSpaceCameraController.enableTranslate = false;
         setStatus('READY');
+
+        const updateCamera = () => {
+          if (!frameSphere) return;
+          scene.camera.lookAt(
+            frameSphere.center,
+            new CesiumApi.HeadingPitchRange(view.heading, view.pitch, view.range),
+          );
+        };
+        const pointerDown = event => {
+          if (event.button !== 0) return;
+          dragging = true;
+          dragX = event.clientX;
+          dragY = event.clientY;
+          canvas.setPointerCapture(event.pointerId);
+          event.preventDefault();
+          event.stopPropagation();
+        };
+        const pointerMove = event => {
+          if (!dragging) return;
+          const deltaX = event.clientX - dragX;
+          const deltaY = event.clientY - dragY;
+          dragX = event.clientX;
+          dragY = event.clientY;
+          view.heading -= deltaX * 0.007;
+          view.pitch = Math.max(-1.35, Math.min(0.15, view.pitch + deltaY * 0.005));
+          updateCamera();
+          event.preventDefault();
+          event.stopPropagation();
+        };
+        const pointerUp = event => {
+          dragging = false;
+          if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+        };
+        const wheel = event => {
+          if (!frameSphere) return;
+          const minimumRange = Math.max(frameSphere.radius * 1.15, 5);
+          const maximumRange = Math.max(frameSphere.radius * 8, 80);
+          view.range = Math.max(minimumRange, Math.min(maximumRange, view.range * Math.exp(event.deltaY * 0.001)));
+          updateCamera();
+          event.preventDefault();
+          event.stopPropagation();
+        };
+        canvas.addEventListener('pointerdown', pointerDown);
+        canvas.addEventListener('pointermove', pointerMove);
+        canvas.addEventListener('pointerup', pointerUp);
+        canvas.addEventListener('pointercancel', pointerUp);
+        canvas.addEventListener('wheel', wheel, { passive: false });
+        removeInputListeners = () => {
+          canvas.removeEventListener('pointerdown', pointerDown);
+          canvas.removeEventListener('pointermove', pointerMove);
+          canvas.removeEventListener('pointerup', pointerUp);
+          canvas.removeEventListener('pointercancel', pointerUp);
+          canvas.removeEventListener('wheel', wheel);
+        };
 
         const resize = () => {
           if (!canvas || !scene) return;
@@ -78,6 +136,9 @@ export default function ReferenceModelViewport({ item, modelUrl = null, fallback
           const height = Math.max(1, Math.round(canvas.clientHeight * ratio));
           if (canvas.width !== width) canvas.width = width;
           if (canvas.height !== height) canvas.height = height;
+          if ('aspectRatio' in scene.camera.frustum) {
+            scene.camera.frustum.aspectRatio = width / height;
+          }
         };
         resizeObserver = new ResizeObserver(resize);
         resizeObserver.observe(canvas);
@@ -95,15 +156,9 @@ export default function ReferenceModelViewport({ item, modelUrl = null, fallback
           }
           scene.render();
           if (!cameraFramed && model?.ready && model.boundingSphere) {
-            const sphere = model.boundingSphere;
-            scene.camera.lookAt(
-              sphere.center,
-              new CesiumApi.HeadingPitchRange(
-                0.65,
-                -0.28,
-                Math.max(sphere.radius * 2.8, 12),
-              ),
-            );
+            frameSphere = CesiumApi.BoundingSphere.clone(model.boundingSphere);
+            view.range = Math.max(frameSphere.radius * 3.2, 14);
+            updateCamera();
             cameraFramed = true;
           }
           frameId = requestAnimationFrame(render);
@@ -122,6 +177,7 @@ export default function ReferenceModelViewport({ item, modelUrl = null, fallback
       disposed = true;
       cancelAnimationFrame(frameId);
       resizeObserver?.disconnect();
+      removeInputListeners?.();
       if (scene && !scene.isDestroyed()) scene.destroy();
     };
   }, [activeModelUrl]);
@@ -135,7 +191,7 @@ export default function ReferenceModelViewport({ item, modelUrl = null, fallback
   };
 
   return <section className={`reference-model ${activeModelUrl ? 'has-model' : 'is-empty'}`}>
-    <canvas ref={canvasRef} aria-label={`3D-модель ${item.name}`} />
+    <canvas ref={canvasRef} data-design-ui aria-label={`3D-модель ${item.name}`} />
     {!activeModelUrl && <div className="reference-model__placeholder">
       {fallbackAsset && <img src={fallbackAsset.src} alt="" />}
       <span>3D MODEL SLOT</span>
