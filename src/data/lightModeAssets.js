@@ -15,18 +15,30 @@ import gepard180Url from '../assets/icons/Air Defence/GEPARD/180 degree.png';
 import gepard225Url from '../assets/icons/Air Defence/GEPARD/225 degree.png';
 import gepard270Url from '../assets/icons/Air Defence/GEPARD/270 degree.png';
 import gepard315Url from '../assets/icons/Air Defence/GEPARD/315 degree.png';
+import aster30Url from '../assets/icons/Air Defence/ASTER-30 FOR SAMP-T/aster_30_reference.webp';
 import iskanderUrl from '../assets/icons/Ballistic Missiles/ISKANDER-M.png';
-import kalibrUrl from '../assets/icons/Cruise MIssiles/KALIBR.png';
-import kh101Url from '../assets/icons/Cruise MIssiles/X-101.png';
-import geranUrl from '../assets/icons/UAVS/ГЕРАНЬ-2.jpg';
-import { getTargetModelDisplayName, LIGHT_TARGET_MODEL } from './lightTargetModels.js';
+import kalibrUrl from '../assets/icons/Cruise MIssiles/kalibr/kalibr-top.png';
+import kh555Url from '../assets/icons/Cruise MIssiles/X-555/kh-555-top.png';
+import geranUrl from '../assets/icons/UAVS/GERAN-2-SHAHED-136/geran-2-top.png';
+import gerberaUrl from '../assets/icons/UAVS/GERBERA/gerbera-top.png';
+import humveeUrl from '../assets/icons/Air Defence/HAMVEE WIHT GUN/humvee-mwg-isometric.png';
+import sampTRadarUrl from '../assets/icons/Air Defence/SAMP-T RADAR/samp-t-radar-isometric.png';
+import sampTLauncherUrl from '../assets/icons/Air Defence/SAMP-T LAUNCHER/samp-t-launcher-isometric.png';
+import kh555ModelUrl from '../assets/icons/Cruise MIssiles/X-555/kh-555_missile_high-poly_fbx.glb?url';
+import geranModelUrl from '../assets/icons/UAVS/GERAN-2-SHAHED-136/iranian_shahed-136_military_drone.glb?url';
+import gerberaModelUrl from '../assets/icons/UAVS/GERBERA/uav_gerbera_low-poly.glb?url';
+import kalibrModelUrl from '../assets/icons/Cruise MIssiles/kalibr/kalibr3d.glb?url';
+import humveeModelUrl from '../assets/icons/Air Defence/HAMVEE WIHT GUN/ukrainian_modified_humvee.glb?url';
+import { getTargetModelDisplayName, LIGHT_TARGET_MODEL, normalizeLightTargetModelId } from './lightTargetModels.js';
 
-export { LIGHT_TARGET_MODEL } from './lightTargetModels.js';
+
+export { LIGHT_TARGET_MODEL, LIGHT_TARGET_MODEL_OPTIONS } from './lightTargetModels.js';
 
 const ASSET_CATALOG = Object.freeze({
-  GERAN_2: { src: geranUrl, label: 'Герань-2 / Shahed-136', className: 'uav', assetRotationOffsetDeg: -45, opaqueBackground: true },
-  KH_101: { src: kh101Url, label: 'Х-101', className: 'cruise', assetRotationOffsetDeg: 90, opaqueBackground: true },
-  KALIBR: { src: kalibrUrl, label: 'Калибр', className: 'cruise', assetRotationOffsetDeg: 90 },
+  GERAN_2: { id: 'GERAN_2', displayName: 'Герань-2', category: 'UAV', src: geranUrl, icon: geranUrl, previewModel: geranModelUrl, previewCameraPreset: 'TOP_VIEW_UAV', label: 'Герань-2', className: 'uav', assetRotationOffsetDeg: 0 },
+  GERBERA: { id: 'GERBERA', displayName: 'Gerbera', category: 'DECOY_UAV', src: gerberaUrl, icon: gerberaUrl, previewModel: gerberaModelUrl, previewCameraPreset: 'TOP_VIEW_UAV', label: 'Gerbera', className: 'uav', assetRotationOffsetDeg: 0 },
+  KH_555: { id: 'KH_555', displayName: 'Х-555', category: 'CRUISE_MISSILE', src: kh555Url, icon: kh555Url, previewModel: kh555ModelUrl, previewCameraPreset: 'TOP_VIEW_MISSILE', label: 'Х-555', className: 'cruise', assetRotationOffsetDeg: 0 },
+  KALIBR: { id: 'KALIBR', displayName: 'Калибр', category: 'CRUISE_MISSILE', src: kalibrUrl, icon: kalibrUrl, previewModel: kalibrModelUrl, previewCameraPreset: 'TOP_VIEW_MISSILE', label: 'Калибр', className: 'cruise', assetRotationOffsetDeg: 0 },
   ISKANDER_M: { src: iskanderUrl, label: 'Искандер-М', className: 'ballistic', assetRotationOffsetDeg: -90 },
   PATRIOT_RADAR: { src: patriotRadarUrl, label: 'Patriot radar', className: 'radar', assetRotationOffsetDeg: 0 },
   PATRIOT_LAUNCHER: { src: patriotLauncherUrl, label: 'Patriot launcher', className: 'launcher', assetRotationOffsetDeg: 45 },
@@ -45,6 +57,10 @@ const ASSET_CATALOG = Object.freeze({
   GEPARD_225: { src: gepard225Url, label: 'Gepard 1A2', className: 'gepard', lockSpriteRotation: true },
   GEPARD_270: { src: gepard270Url, label: 'Gepard 1A2', className: 'gepard', lockSpriteRotation: true },
   GEPARD_315: { src: gepard315Url, label: 'Gepard 1A2', className: 'gepard', lockSpriteRotation: true },
+  SAMP_T_RADAR: { src: sampTRadarUrl, label: 'Arabel radar', className: 'radar', assetRotationOffsetDeg: 0 },
+  SAMP_T_LAUNCHER: { src: sampTLauncherUrl, label: 'SAMP/T launcher', className: 'launcher', assetRotationOffsetDeg: 0 },
+  ASTER_30: { src: aster30Url, label: 'Aster 30', className: 'interceptor', assetRotationOffsetDeg: -90, opaqueBackground: true },
+  HUMVEE_MWG: { id: 'HUMVEE_MWG', displayName: 'Humvee MBG', category: 'MOBILE_FIRE_GROUP', src: humveeUrl, icon: humveeUrl, previewModel: humveeModelUrl, previewCameraPreset: 'ISOMETRIC_GROUND', label: 'Humvee MBG', className: 'gepard', lockSpriteRotation: true },
 });
 
 const SYSTEM_ASSETS = Object.freeze({
@@ -52,9 +68,17 @@ const SYSTEM_ASSETS = Object.freeze({
   MEDIUM: { radar: 'NASAMS_RADAR', launcher: 'NASAMS_LAUNCHER', interceptor: 'AIM_120' },
   LONG: { radar: 'PATRIOT_RADAR', launcher: 'PATRIOT_LAUNCHER', interceptor: 'PAC_3' },
   GUN: { radar: 'GEPARD_0', launcher: 'GEPARD_0', interceptor: null },
+  SAMP_T: { radar: 'SAMP_T_RADAR', launcher: 'SAMP_T_LAUNCHER', interceptor: 'ASTER_30' },
+  GAZ: { radar: 'HUMVEE_MWG', launcher: 'HUMVEE_MWG', interceptor: null },
 });
 
-export const getLightAsset = assetId => ASSET_CATALOG[assetId] ?? ASSET_CATALOG.GERAN_2;
+const normalizeAssetId = assetId => ({
+  GAZ_DSHK: 'HUMVEE_MWG',
+  KH_101: LIGHT_TARGET_MODEL.KH_555,
+  SHAHED_136: LIGHT_TARGET_MODEL.GERAN_2,
+}[assetId] ?? assetId);
+
+export const getLightAsset = assetId => ASSET_CATALOG[normalizeAssetId(assetId)] ?? ASSET_CATALOG.GERAN_2;
 
 export const getSystemAssetId = (category, component, heading = 0) => {
   if (category === 'GUN') {
@@ -65,9 +89,10 @@ export const getSystemAssetId = (category, component, heading = 0) => {
 };
 
 export const getTargetAssetId = target => {
-  if (target?.modelId && ASSET_CATALOG[target.modelId]) return target.modelId;
+  const normalizedModelId = normalizeLightTargetModelId(target?.modelId);
+  if (normalizedModelId && ASSET_CATALOG[normalizedModelId]) return normalizedModelId;
   if (target?.type === 'BALLISTIC_TARGET') return LIGHT_TARGET_MODEL.ISKANDER_M;
-  if (target?.type === 'CRUISE_TARGET') return LIGHT_TARGET_MODEL.KH_101;
+  if (target?.type === 'CRUISE_TARGET') return LIGHT_TARGET_MODEL.KH_555;
   return LIGHT_TARGET_MODEL.GERAN_2;
 };
 

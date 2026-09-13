@@ -3,6 +3,7 @@ import { getGunSystemSpec, WEAPON_SYSTEM_TYPE } from '../data/gunSystems.js';
 import { getBearing, getDestinationPoint, getDistanceKm } from './geo.js';
 import { getRolePriorityTier, getTargetEtaSec } from './autoDefense.js';
 import { INTERCEPT_FEASIBILITY } from './interceptFeasibility.js';
+import { isInterceptorCompatible } from '../data/weaponCompatibility.js';
 
 export const AUTO_ENGAGEMENT_DECISION = Object.freeze({
   ENGAGE: 'ENGAGE',
@@ -21,8 +22,9 @@ export const INTERCEPT_SOLUTION_STATE = Object.freeze({
 const clamp01 = value => Math.max(0, Math.min(1, value));
 
 const getBatteryCategory = battery => {
-  if (battery?.category) return battery.category;
   if (battery?.weaponType === WEAPON_SYSTEM_TYPE.GUN_AA) return 'GUN';
+  if (battery?.category === 'SAMP_T' || battery?.type?.includes('SAMP/T')) return 'MEDIUM';
+  if (battery?.category) return battery.category;
   if (battery?.type?.includes('PATRIOT')) return 'LONG';
   if (battery?.type?.includes('NASAMS')) return 'MEDIUM';
   return 'SHORT';
@@ -122,7 +124,9 @@ const batteryCanPlanForTarget = (battery, target) => {
   if (!battery || battery.controlMode === 'HOLD' || battery.missilesLeft <= 0) return false;
   if (battery.components?.radar?.operational === false) return false;
   if (!battery.components?.launchers?.some(launcher => launcher.operational !== false)) return false;
-  if (battery.weaponType !== WEAPON_SYSTEM_TYPE.GUN_AA) return true;
+  if (battery.weaponType !== WEAPON_SYSTEM_TYPE.GUN_AA) {
+    return isInterceptorCompatible(battery, battery.interceptorSpecId);
+  }
   const spec = getGunSystemSpec(battery.gunSpecId);
   return Boolean(
     spec

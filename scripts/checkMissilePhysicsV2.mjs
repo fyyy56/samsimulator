@@ -95,7 +95,10 @@ assert.ok(depletedIrisTurn.effectiveTurnRateDegPerSec < irisTurn.effectiveTurnRa
 const maneuveringTrack = {
   id: 'TRK-MANEUVER',
   state: 'TRACKED',
-  reportedPosition: { lat: 0.05, lng: 0.08, alt: 1_000 },
+  // Keep both missiles in the same MIDCOURSE phase. The old close fixture put
+  // AIM-120 into TERMINAL while IRIS-T was still MIDCOURSE and compared two
+  // different controller gains rather than airframe manoeuvrability.
+  reportedPosition: { lat: 0.2, lng: 0.2, alt: 1_000 },
   reportedHeading: 95,
   reportedSpeedKmh: 700,
   lastUpdateTime: 1,

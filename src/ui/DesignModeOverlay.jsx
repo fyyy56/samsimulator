@@ -49,6 +49,7 @@ const collectEditableText = surface => {
   const elements = [surface, ...surface.querySelectorAll(TEXT_ELEMENT_SELECTOR)]
     .filter(element => (
       !element.closest('[data-design-ui]')
+      && !element.closest('[data-design-dynamic-text]')
       && element.closest('[data-design-id]') === surface
       && getDirectTextSegments(element).length > 0
     ));
@@ -106,13 +107,18 @@ const applyTextConfiguration = profile => {
     const items = collectEditableText(surface);
     const elements = [...new Set(items.map(item => item.element))];
     elements.forEach(element => {
+      const elementItems = items.filter(item => item.element === element);
       const configuredItem = items.find(item => item.element === element && style?.textSizes?.[item.key]);
       const layoutItem = items.find(item => item.element === element && style?.textLayouts?.[item.key]);
       const layout = layoutItem ? style.textLayouts[layoutItem.key] : null;
+      const preservesWhitespace = elementItems.some(item => {
+        const value = style?.textOverrides?.[item.key];
+        return typeof value === 'string' && (/\n/.test(value) || / {2,}/.test(value));
+      });
       element.style.fontSize = configuredItem ? `${style.textSizes[configuredItem.key]}px` : '';
       element.style.maxWidth = style?.width > 0 ? '100%' : '';
       element.style.overflowWrap = style?.width > 0 ? 'anywhere' : '';
-      element.style.whiteSpace = style?.width > 0 ? 'normal' : '';
+      element.style.whiteSpace = preservesWhitespace ? 'pre-wrap' : (style?.width > 0 ? 'normal' : '');
       element.style.transform = layout ? `translate(${layout.x}px, ${layout.y}px)` : '';
       element.style.width = layout?.width > 0 ? `${layout.width}px` : '';
       element.style.height = layout?.height > 0 ? `${layout.height}px` : '';
@@ -132,13 +138,16 @@ const applyTextConfiguration = profile => {
       element.style.borderStyle = layout?.borderWidth > 0 ? 'solid' : '';
       element.style.borderWidth = layout?.borderWidth > 0 ? `${layout.borderWidth}px` : '';
       element.style.borderRadius = layout ? `${layout.borderRadius}px` : '';
+      element.style.textAlign = layout?.textAlign ?? '';
       element.style.opacity = layout ? String(layout.opacity) : '';
       element.style.padding = layout?.padding > 0 ? `${layout.padding}px` : '';
       element.style.backdropFilter = layout?.blur > 0 ? `blur(${layout.blur}px)` : '';
     });
     items.forEach(item => {
       if (!item.element.isContentEditable) {
-        writeTextSegment(item.nodes, style?.textOverrides?.[item.key] ?? item.originalText);
+        const value = style?.textOverrides?.[item.key] ?? item.originalText;
+        writeTextSegment(item.nodes, value);
+        item.element.classList.toggle('design-text-empty', !value.trim());
       }
     });
   });
@@ -166,10 +175,13 @@ export default function DesignModeOverlay() {
   const [selectionRect, setSelectionRect] = useState(null);
   const [textSelectionRect, setTextSelectionRect] = useState(null);
   const [textOptions, setTextOptions] = useState([]);
+  const [surfaceOptions, setSurfaceOptions] = useState([]);
   const [selectedTextKey, setSelectedTextKey] = useState(null);
   const [editingTextKey, setEditingTextKey] = useState(null);
   const dragRef = useRef(null);
   const editingRef = useRef(null);
+  const selectionFrameRef = useRef(null);
+  const textFrameRef = useRef(null);
   const selectedStyle = useMemo(() => ({ ...DEFAULT_SURFACE_STYLE, ...profile?.surfaces[selectedSurfaceId] }), [profile, selectedSurfaceId]);
   const selectedText = selectedTextKey
     ? textOptions.find(item => item.key === selectedTextKey) ?? null
@@ -183,11 +195,15 @@ export default function DesignModeOverlay() {
     if (!editing) return;
     const { element, id, item, previousValue } = editing;
     const value = save
-      ? (element.innerText ?? element.textContent ?? '').replace(/\u00a0/g, ' ').trim()
+      ? (element.innerText ?? element.textContent ?? '')
+        .replace(/\u00a0/g, ' ')
+        .replace(/\r\n?/g, '\n')
+        .replace(/\n$/, '')
       : previousValue;
     element.removeAttribute('contenteditable');
     element.removeAttribute('spellcheck');
     element.classList.remove('design-inline-editing');
+    element.classList.toggle('design-text-empty', !value.trim());
     const currentSegments = getDirectTextSegments(element);
     const targetNodes = currentSegments[0] ?? item.nodes.filter(node => node.isConnected);
     if (targetNodes.length) writeTextSegment(targetNodes, value);
@@ -279,6 +295,37 @@ export default function DesignModeOverlay() {
   }, [enabled, profile, selectedSurfaceId]);
 
   useEffect(() => {
+    if (!enabled) return undefined;
+    let frame = 0;
+    const refresh = () => {
+      frame = 0;
+      const seen = new Set();
+      const next = [...document.querySelectorAll('[data-design-id]')].flatMap(element => {
+        const id = element.dataset.designId;
+        if (!id || seen.has(id)) return [];
+        seen.add(id);
+        return [{ id, name: element.dataset.designName || id }];
+      });
+      setSurfaceOptions(current => (
+        current.length === next.length
+        && current.every((item, index) => item.id === next[index].id && item.name === next[index].name)
+          ? current
+          : next
+      ));
+    };
+    const scheduleRefresh = () => {
+      if (!frame) frame = window.requestAnimationFrame(refresh);
+    };
+    scheduleRefresh();
+    const observer = new MutationObserver(scheduleRefresh);
+    observer.observe(document.body, { subtree: true, childList: true });
+    return () => {
+      observer.disconnect();
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, [enabled]);
+
+  useEffect(() => {
     if (!enabled || !selectedSurfaceId) {
       window.requestAnimationFrame(() => setSelectionRect(null));
       return undefined;
@@ -339,6 +386,9 @@ export default function DesignModeOverlay() {
     const pointerDown = event => {
       const path = event.composedPath().filter(node => node instanceof Element);
       const activeEditor = editingRef.current;
+      // Once a text block is in edit mode, leave pointer handling entirely to
+      // the browser so caret placement, word selection and drag selection work
+      // like they do in a regular document editor.
       if (activeEditor && path.includes(activeEditor.element)) return;
       const clickedModelCanvas = path.some(element => element.hasAttribute('data-design-model-canvas'));
       if (activeEditor && clickedModelCanvas) {
@@ -358,6 +408,7 @@ export default function DesignModeOverlay() {
       const editableText = collectEditableText(surface);
       const clickedTextElement = path.find(element => (
         element.hasAttribute('data-design-text-key')
+        && !element.closest('[data-design-dynamic-text]')
         && element.closest('[data-design-id]') === surface
       )) ?? path.find(element => (
         element.matches?.(TEXT_ELEMENT_SELECTOR)
@@ -369,67 +420,92 @@ export default function DesignModeOverlay() {
         || path.includes(item.element)
         || (event.target instanceof Node && item.element.contains(event.target))
       )) ?? null;
-      const sameSurfaceSelection = selectedSurfaceId === id;
       selectSurface(id);
       setTextOptions(editableText);
       setSelectedTextKey(clickedText?.key ?? null);
-      const current = useDesignStore.getState();
-      const currentProfile = selectActiveDesignProfile(current);
-      const style = { ...DEFAULT_SURFACE_STYLE, ...currentProfile?.surfaces[id] };
       if (clickedText) {
         beginInlineEdit(clickedText, id, event);
         return;
       }
       setSelectedTextKey(null);
-      dragRef.current = {
-        mode: 'pending-surface', canDrag: sameSurfaceSelection, id,
-        startX: event.clientX, startY: event.clientY, x: style.x, y: style.y,
-      };
     };
     const pointerMove = event => {
       const drag = dragRef.current;
       if (!drag || !(event.buttons & 1)) return;
       const deltaX = event.clientX - drag.startX;
       const deltaY = event.clientY - drag.startY;
-      if (drag.mode.startsWith('pending-')) {
-        if (!drag.canDrag || Math.hypot(deltaX, deltaY) < 4) return;
-        drag.mode = drag.mode === 'pending-text' ? 'text-move' : 'move';
-      }
+      event.preventDefault();
+      event.stopPropagation();
       if (drag.mode === 'text-move') {
-        updateSurface(drag.id, { textLayouts: {
-          ...drag.textLayouts,
-          [drag.textKey]: { ...drag.layout, x: drag.layout.x + deltaX, y: drag.layout.y + deltaY },
-        } });
+        drag.pending = { x: drag.layout.x + deltaX, y: drag.layout.y + deltaY };
+        drag.element.style.transform = `translate(${drag.pending.x}px, ${drag.pending.y}px)`;
+        if (textFrameRef.current) {
+          textFrameRef.current.style.left = `${drag.rect.left + deltaX}px`;
+          textFrameRef.current.style.top = `${drag.rect.top + deltaY}px`;
+        }
         return;
       }
       if (drag.mode === 'text-resize') {
         const west = drag.corner.includes('w');
         const north = drag.corner.includes('n');
-        updateSurface(drag.id, { textLayouts: {
-          ...drag.textLayouts,
-          [drag.textKey]: {
-            x: drag.layout.x + (west ? deltaX : 0),
-            y: drag.layout.y + (north ? deltaY : 0),
-            width: Math.max(24, drag.layout.width + (west ? -deltaX : deltaX)),
-            height: Math.max(12, drag.layout.height + (north ? -deltaY : deltaY)),
-          },
-        } });
+        drag.pending = {
+          x: drag.layout.x + (west ? deltaX : 0),
+          y: drag.layout.y + (north ? deltaY : 0),
+          width: Math.max(24, drag.layout.width + (west ? -deltaX : deltaX)),
+          height: Math.max(12, drag.layout.height + (north ? -deltaY : deltaY)),
+        };
+        drag.element.style.transform = `translate(${drag.pending.x}px, ${drag.pending.y}px)`;
+        drag.element.style.width = `${drag.pending.width}px`;
+        drag.element.style.height = `${drag.pending.height}px`;
+        if (textFrameRef.current) {
+          textFrameRef.current.style.left = `${drag.rect.left + (west ? deltaX : 0)}px`;
+          textFrameRef.current.style.top = `${drag.rect.top + (north ? deltaY : 0)}px`;
+          textFrameRef.current.style.width = `${drag.pending.width}px`;
+          textFrameRef.current.style.height = `${drag.pending.height}px`;
+        }
         return;
       }
       if (drag.mode === 'move') {
-        updateSurface(drag.id, { x: drag.x + deltaX, y: drag.y + deltaY });
+        drag.pending = { x: drag.x + deltaX, y: drag.y + deltaY };
+        drag.element.style.transform = `translate(${drag.pending.x}px, ${drag.pending.y}px)`;
+        if (selectionFrameRef.current) {
+          selectionFrameRef.current.style.left = `${drag.rect.left + deltaX}px`;
+          selectionFrameRef.current.style.top = `${drag.rect.top + deltaY}px`;
+        }
         return;
       }
       const west = drag.corner.includes('w');
       const north = drag.corner.includes('n');
-      updateSurface(drag.id, {
+      drag.pending = {
         width: Math.max(100, drag.width + (west ? -deltaX : deltaX)),
         height: Math.max(40, drag.height + (north ? -deltaY : deltaY)),
         x: drag.x + (west ? deltaX : 0),
         y: drag.y + (north ? deltaY : 0),
-      });
+      };
+      drag.element.style.transform = `translate(${drag.pending.x}px, ${drag.pending.y}px)`;
+      drag.element.style.width = `${drag.pending.width}px`;
+      drag.element.style.height = `${drag.pending.height}px`;
+      if (selectionFrameRef.current) {
+        selectionFrameRef.current.style.left = `${drag.rect.left + (west ? deltaX : 0)}px`;
+        selectionFrameRef.current.style.top = `${drag.rect.top + (north ? deltaY : 0)}px`;
+        selectionFrameRef.current.style.width = `${drag.pending.width}px`;
+        selectionFrameRef.current.style.height = `${drag.pending.height}px`;
+      }
     };
-    const pointerUp = () => { dragRef.current = null; };
+    const pointerUp = () => {
+      const drag = dragRef.current;
+      if (drag?.pending) {
+        if (drag.mode.startsWith('text-')) {
+          updateSurface(drag.id, { textLayouts: {
+            ...drag.textLayouts,
+            [drag.textKey]: { ...drag.layout, ...drag.pending },
+          } });
+        } else {
+          updateSurface(drag.id, drag.pending);
+        }
+      }
+      dragRef.current = null;
+    };
     const blockInterfaceAction = event => {
       const path = event.composedPath().filter(node => node instanceof Element);
       if (path.some(element => element.hasAttribute('data-design-ui'))) return;
@@ -448,7 +524,7 @@ export default function DesignModeOverlay() {
       window.removeEventListener('pointermove', pointerMove, true);
       window.removeEventListener('pointerup', pointerUp, true);
     };
-  }, [beginInlineEdit, enabled, finishInlineEdit, selectSurface, selectedSurfaceId, selectedTextKey, updateSurface]);
+  }, [beginInlineEdit, enabled, finishInlineEdit, selectSurface, updateSurface]);
 
   useEffect(() => {
     if (!enabled) return undefined;
@@ -457,7 +533,7 @@ export default function DesignModeOverlay() {
       if (event.key === 'Escape') {
         event.preventDefault();
         finishInlineEdit(false);
-      } else if (event.key === 'Enter' && !event.shiftKey) {
+      } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
         finishInlineEdit(true);
       }
@@ -466,21 +542,13 @@ export default function DesignModeOverlay() {
     return () => document.removeEventListener('keydown', keyDown, true);
   }, [enabled, finishInlineEdit]);
 
-  useEffect(() => {
-    if (!enabled) return undefined;
-    const focusOut = event => {
-      if (editingRef.current?.element !== event.target) return;
-      finishInlineEdit(true);
-      setSelectedTextKey(null);
-    };
-    document.addEventListener('focusout', focusOut, true);
-    return () => document.removeEventListener('focusout', focusOut, true);
-  }, [enabled, finishInlineEdit]);
-
   const beginResize = (event, corner) => {
     event.preventDefault();
     event.stopPropagation();
     if (!selectedSurfaceId || !selectionRect) return;
+    const element = [...document.querySelectorAll('[data-design-id]')]
+      .find(candidate => candidate.dataset.designId === selectedSurfaceId);
+    if (!element) return;
     dragRef.current = {
       mode: 'resize',
       corner,
@@ -491,6 +559,8 @@ export default function DesignModeOverlay() {
       y: selectedStyle.y,
       width: selectedStyle.width || selectionRect.width,
       height: selectedStyle.height || selectionRect.height,
+      element,
+      rect: { ...selectionRect },
     };
   };
 
@@ -498,6 +568,9 @@ export default function DesignModeOverlay() {
     event.preventDefault();
     event.stopPropagation();
     if (!selectedSurfaceId) return;
+    const element = [...document.querySelectorAll('[data-design-id]')]
+      .find(candidate => candidate.dataset.designId === selectedSurfaceId);
+    if (!element || !selectionRect) return;
     dragRef.current = {
       mode: 'move',
       id: selectedSurfaceId,
@@ -505,6 +578,8 @@ export default function DesignModeOverlay() {
       startY: event.clientY,
       x: selectedStyle.x,
       y: selectedStyle.y,
+      element,
+      rect: { ...selectionRect },
     };
   };
 
@@ -529,6 +604,8 @@ export default function DesignModeOverlay() {
       startY: event.clientY,
       layout,
       textLayouts: selectedStyle.textLayouts ?? {},
+      element: selectedText.element,
+      rect: { ...textSelectionRect },
     };
   };
 
@@ -536,6 +613,7 @@ export default function DesignModeOverlay() {
     event.preventDefault();
     event.stopPropagation();
     if (!selectedSurfaceId || !selectedText) return;
+    if (!textSelectionRect) return;
     const layout = { ...DEFAULT_TEXT_LAYOUT, ...selectedStyle.textLayouts?.[selectedText.key] };
     dragRef.current = {
       mode: 'text-move',
@@ -545,6 +623,8 @@ export default function DesignModeOverlay() {
       startY: event.clientY,
       layout,
       textLayouts: selectedStyle.textLayouts ?? {},
+      element: selectedText.element,
+      rect: { ...textSelectionRect },
     };
   };
 
@@ -614,17 +694,26 @@ export default function DesignModeOverlay() {
     });
     setSelectedTextKey(null);
   };
+  const hideSelectedText = () => {
+    if (!selectedText) return;
+    updateSurface(selectedSurfaceId, {
+      textOverrides: { ...selectedStyle.textOverrides, [selectedText.key]: '' },
+    });
+    setSelectedTextKey(null);
+  };
   return <>
-    {selectionRect && <div className="design-resize-frame" data-design-ui style={{ left: selectionRect.left, top: selectionRect.top, width: selectionRect.width, height: selectionRect.height }}>
-      <button className="design-move-handle" aria-label="Переместить панель" title="Перетащить панель" onPointerDown={beginSurfaceMove}>↔</button>
+    {selectionRect && <div ref={selectionFrameRef} className="design-resize-frame" data-design-ui style={{ left: selectionRect.left, top: selectionRect.top, width: selectionRect.width, height: selectionRect.height }}>
+      {['top', 'right', 'bottom', 'left'].map(edge => <button key={edge} className={`design-frame-drag-edge is-${edge}`} aria-label="Переместить панель" title="Перетащивание за рамку" onPointerDown={beginSurfaceMove} />)}
       {['nw', 'ne', 'sw', 'se'].map(corner => <button key={corner} className={`design-resize-handle is-${corner}`} aria-label={`Изменить размер ${corner}`} onPointerDown={event => beginResize(event, corner)} />)}
     </div>}
-    {textSelectionRect && editingTextKey !== selectedText?.key && <div className="design-text-resize-frame" data-design-ui style={{ left: textSelectionRect.left, top: textSelectionRect.top, width: textSelectionRect.width, height: textSelectionRect.height }} onPointerDown={beginTextMove}>
+    {textSelectionRect && <div ref={textFrameRef} className={`design-text-resize-frame ${editingTextKey === selectedText?.key ? 'is-editing' : ''}`} data-design-ui style={{ left: textSelectionRect.left, top: textSelectionRect.top, width: textSelectionRect.width, height: textSelectionRect.height }}>
+      {['top', 'right', 'bottom', 'left'].map(edge => <button key={edge} className={`design-frame-drag-edge is-${edge}`} aria-label="Переместить текст" title="Перетаскивание текста за рамку" onPointerDown={beginTextMove} />)}
       {['nw', 'ne', 'sw', 'se'].map(corner => <button key={corner} className={`design-text-resize-handle is-${corner}`} aria-label={`Изменить текст ${corner}`} onPointerDown={event => beginTextResize(event, corner)} />)}
     </div>}
     <aside className={`design-inspector design-inspector--${inspectorSide.toLowerCase()}`} data-design-ui>
     <header><div><span>DESIGN MODE</span><strong>{selectedSurfaceId || 'Выберите панель'}</strong></div><nav><button title="Переместить инспектор" onClick={() => setInspectorSide(inspectorSide === 'RIGHT' ? 'LEFT' : 'RIGHT')}>{inspectorSide === 'RIGHT' ? '←' : '→'}</button><button onClick={() => setEnabled(false)}>×</button></nav></header>
-    <p>Клик по тексту редактирует его прямо на экране. Клик снаружи сохраняет. Enter — сохранить, Escape — отменить. Рамки и панели перемещаются отдельными ручками.</p>
+    <p>Клик по тексту редактирует его прямо на экране. Enter — новая строка, Ctrl/Cmd+Enter — сохранить, Escape — отменить. Клик снаружи тоже сохраняет.</p>
+    <label>Слой / панель<select value={selectedSurfaceId ?? ''} onChange={event => selectSurface(event.target.value || null)}><option value="">Выберите слой…</option>{surfaceOptions.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
     <label>Пресет<select value={profile?.id} onChange={event => { const next = profiles.find(item => item.id === event.target.value); setActiveProfile(event.target.value); setProfileName(next?.name ?? ''); }}>{profiles.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
     <div className="design-inspector__profile"><input value={profileName} onChange={event => setProfileName(event.target.value)} /><button onClick={() => renameActiveProfile(profileName)}>Сохранить имя</button><button onClick={() => { createProfile('Новый пресет'); setProfileName('Новый пресет'); }}>+ Пресет</button></div>
     {selectedSurfaceId ? <div className="design-inspector__fields">
@@ -650,6 +739,9 @@ export default function DesignModeOverlay() {
           <label>Рамка<input type="color" value={selectedTextLayout.borderColor} onChange={event => updateSelectedTextLayout({ borderColor: event.target.value })} /></label>
         </div>
         <label className="design-inspector__check"><input type="checkbox" checked={selectedTextLayout.useTextColor} onChange={event => updateSelectedTextLayout({ useTextColor: event.target.checked })} />Свой цвет текста</label>
+        <div className="design-text-align" role="group" aria-label="Выравнивание текста">
+          {[['left', '≡←'], ['center', '≡'], ['right', '→≡']].map(([value, label]) => <button key={value} className={selectedTextLayout.textAlign === value ? 'is-active' : ''} title={value === 'left' ? 'По левому краю' : value === 'center' ? 'По центру' : 'По правому краю'} onClick={() => updateSelectedTextLayout({ textAlign: value })}>{label}</button>)}
+        </div>
         <label>Прозрачность фона <b>{Math.round(selectedTextLayout.backgroundAlpha * 100)}%</b><input type="range" min="0" max="1" step="0.01" value={selectedTextLayout.backgroundAlpha} onChange={event => updateSelectedTextLayout({ backgroundAlpha: event.target.value })} /></label>
         <label>Общая прозрачность <b>{Math.round(selectedTextLayout.opacity * 100)}%</b><input type="range" min="0.15" max="1" step="0.01" value={selectedTextLayout.opacity} onChange={event => updateSelectedTextLayout({ opacity: event.target.value })} /></label>
         <div className="design-inspector__text-layout">
@@ -667,6 +759,7 @@ export default function DesignModeOverlay() {
         delete textLayouts[selectedText.key];
         updateSurface(selectedSurfaceId, { textOverrides, textSizes, textLayouts });
       }}>Сбросить этот текст</button>
+      <button className="is-danger" onClick={hideSelectedText}>Скрыть текст / знак</button>
       {selectedStyle.customTextKeys.includes(selectedText.key) && <button className="is-danger" onClick={removeFreeText}>Удалить этот текст</button>}</>}
       </section>}
       <button className="is-danger" onClick={() => resetSurface(selectedSurfaceId)}>Сбросить эту панель</button>

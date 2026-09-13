@@ -84,7 +84,7 @@ export const isBallisticTarget = target => (
 export const getRolePriorityTier = (battery, target) => {
   const category = battery?.category
     ?? (isPatriotBattery(battery) ? 'LONG' : null);
-  if (category === 'GUN') {
+  if (category === 'GUN' || category === 'GAZ') {
     if (target?.type === SIMPLE_TARGET_TYPE.UAV) return 0;
     if (target?.type === SIMPLE_TARGET_TYPE.CRUISE_MISSILE) return 1;
     return 9;
@@ -92,6 +92,11 @@ export const getRolePriorityTier = (battery, target) => {
   if (category === 'MEDIUM') {
     if (target?.type === SIMPLE_TARGET_TYPE.CRUISE_MISSILE) return 0;
     if (target?.type === SIMPLE_TARGET_TYPE.UAV) return 2;
+    return 3;
+  }
+  if (category === 'SAMP_T') {
+    if (isBallisticTarget(target)) return 1;
+    if (target?.type === SIMPLE_TARGET_TYPE.CRUISE_MISSILE) return 1;
     return 3;
   }
   if (category === 'SHORT') {
@@ -176,6 +181,9 @@ export function getInterceptorEngagementPolicy(battery) {
   }
   if (battery?.category === 'SHORT' || battery?.type?.includes('IRIS')) {
     return { maximumActiveInterceptors: 1, maximumAutomaticAttempts: 1 };
+  }
+  if (battery?.category === 'SAMP_T' || battery?.type?.includes('SAMP/T')) {
+    return { maximumActiveInterceptors: 2, maximumAutomaticAttempts: 2 };
   }
   return { maximumActiveInterceptors: 1, maximumAutomaticAttempts: 1 };
 }

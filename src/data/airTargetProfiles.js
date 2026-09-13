@@ -68,7 +68,7 @@ export const ROUTE_GENERATION_CONFIG = Object.freeze({
 
 export const AIR_TARGET_GAMEPLAY_PROFILES = Object.freeze({
   [SIMPLE_TARGET_TYPE.UAV]: Object.freeze({
-    models: Object.freeze([LIGHT_TARGET_MODEL.GERAN_2]),
+    models: Object.freeze([LIGHT_TARGET_MODEL.GERAN_2, LIGHT_TARGET_MODEL.GERBERA]),
     speedRangeKmh: Object.freeze([190, 310]),
     turnRateDegPerSec: 5.5,
     sensorSignature: 0.38,
@@ -87,7 +87,7 @@ export const AIR_TARGET_GAMEPLAY_PROFILES = Object.freeze({
     }),
   }),
   [SIMPLE_TARGET_TYPE.CRUISE_MISSILE]: Object.freeze({
-    models: Object.freeze([LIGHT_TARGET_MODEL.KH_101, LIGHT_TARGET_MODEL.KALIBR]),
+    models: Object.freeze([LIGHT_TARGET_MODEL.KH_555, LIGHT_TARGET_MODEL.KALIBR]),
     speedRangeKmh: Object.freeze([780, 820]),
     turnRateDegPerSec: 2.2,
     sensorSignature: 0.62,
@@ -115,6 +115,24 @@ export const AIR_TARGET_GAMEPLAY_PROFILES = Object.freeze({
   }),
 });
 
-export function getAirTargetGameplayProfile(type) {
+const GERBERA_GAMEPLAY_PROFILE = Object.freeze({
+  ...AIR_TARGET_GAMEPLAY_PROFILES[SIMPLE_TARGET_TYPE.UAV],
+  models: Object.freeze([LIGHT_TARGET_MODEL.GERBERA]),
+  speedRangeKmh: Object.freeze([140, 190]),
+  turnRateDegPerSec: 2.2,
+  altitudeProfile: Object.freeze({
+    startRangeM: Object.freeze([100, 350]),
+    cruiseRangeM: Object.freeze([100, 800]),
+    terminalRangeM: Object.freeze([80, 400]),
+    maximumVerticalSpeedMps: 2.5,
+    cruiseTransitionEndProgress: 0.16,
+    terminalTransitionStartProgress: 0.82,
+  }),
+});
+
+export function getAirTargetGameplayProfile(type, modelId = null) {
+  if (type === SIMPLE_TARGET_TYPE.UAV && modelId === LIGHT_TARGET_MODEL.GERBERA) {
+    return GERBERA_GAMEPLAY_PROFILE;
+  }
   return AIR_TARGET_GAMEPLAY_PROFILES[type] ?? AIR_TARGET_GAMEPLAY_PROFILES[SIMPLE_TARGET_TYPE.UAV];
 }

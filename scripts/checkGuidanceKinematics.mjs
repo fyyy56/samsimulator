@@ -72,7 +72,8 @@ const firstTurnBackUpdate = advanceInterceptorGuidance({
 });
 assert.equal(firstTurnBackUpdate.failedReason, null, 'A transient large correction receives a grace window');
 const rejectedTurnBack = advanceInterceptorGuidance({
-  interceptor: { ...turnBackInterceptor, guidance: firstTurnBackUpdate.guidance },
+  interceptor: { ...turnBackInterceptor, guidance: firstTurnBackUpdate.guidance,
+    timeSinceClosestApproachSec: physics.postPassContinueSec + 0.1 },
   track: behindTrack,
   simulationTime: 21,
   deltaTimeSec: 0.05,
@@ -80,7 +81,7 @@ const rejectedTurnBack = advanceInterceptorGuidance({
 });
 assert.equal(
   rejectedTurnBack.failedReason,
-  INTERCEPTOR_FAILURE_REASON.GEOMETRY_LOST,
+  INTERCEPTOR_FAILURE_REASON.INTERCEPT_LOST,
   'Sustained reverse-course guidance must be rejected',
 );
 

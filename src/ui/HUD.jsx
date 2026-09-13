@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { getInterceptorSpec } from '../data/interceptors.js';
 import { getGunSystemSpec } from '../data/gunSystems.js';
-import { useEngine, SYSTEM_CATALOG } from '../store/engine';
+import { DEPLOYABLE_SYSTEM_IDS, SEARCH_RADAR_PROFILE_IDS, useEngine, SYSTEM_CATALOG } from '../store/engine';
+import { getSearchRadarProfile } from '../data/searchRadarProfiles.js';
 import {
   ENGAGEMENT_STATUS,
   getBatteryEngagementStatus,
@@ -10,23 +11,16 @@ import {
 import { getDistanceKm } from '../store/geo.js';
 import { TRACK_STATE } from '../store/trackSystem.js';
 import { SIMPLE_MAP_THEME, useViewStore } from '../store/viewStore.js';
-import { getTargetModelDisplayName } from '../data/lightTargetModels.js';
+import { getTargetDisplayName } from '../data/lightModeAssets.js';
 import { UI_LANGUAGE, useGameStore } from '../store/gameStore.js';
 import { selectActiveUiPreset, useContentStore } from '../store/contentStore.js';
 import { useDesignSurface } from '../store/designStore.js';
 import { getAltitudeBand } from '../data/airTargetProfiles.js';
 import {
-  evaluateBatteryInterceptFeasibility,
-  evaluateInterceptFeasibility,
-  INTERCEPT_FEASIBILITY,
-} from '../store/interceptFeasibility.js';
-import {
   BATTERY_CONTROL_MODE,
 } from '../store/autoDefense.js';
 import {
   AUTO_ENGAGEMENT_DECISION,
-  calculateInterceptProbability,
-  getInterceptSolutionState,
 } from '../store/autoEngagementPlanner.js';
 import {
   isRussian,
@@ -58,7 +52,7 @@ const formatDistance = (distanceKm) => {
 };
 
 const getTargetGameName = (type, target, ru = false) => {
-  if (target?.modelId) return getTargetModelDisplayName(target.modelId);
+  if (target) return getTargetDisplayName(target);
   if (type === 'CRUISE_TARGET') return ru ? 'Крылатая ракета' : 'Cruise missile';
   if (type === 'BALLISTIC_PLACEHOLDER' || type === 'BALLISTIC_TARGET') return ru ? 'Баллистическая цель' : 'Ballistic threat';
   if (type === 'UAV_TARGET') return ru ? 'Ударный БПЛА' : 'Attack UAV';
@@ -85,6 +79,11 @@ const localizeScenarioName = (name, ru) => (
 );
 
 const getTargetEtaSeconds = (target) => {
+  if (target?.ballisticPhysics?.enabled
+    && Number.isFinite(target.ballisticPhysics.timeToGroundSec)
+    && target.ballisticPhysics.timeToGroundSec > 0) {
+    return target.ballisticPhysics.timeToGroundSec;
+  }
   if (!target?.route?.length || !target.speedKmh) return Number.POSITIVE_INFINITY;
   const remainingWaypoints = target.route.slice(target.waypointIndex);
   if (remainingWaypoints.length === 0) return 0;
@@ -186,7 +185,7 @@ function AttackPriorities({ targets, language, style }) {
   if (objectives.length === 0) return null;
   const ru = isRussian(language);
   return (
-    <aside className="attack-priorities" data-design-id="game-targets" data-design-name="Основные цели" style={style} aria-label={ru ? 'Основные цели атаки' : 'Primary attack objectives'}>
+    <aside className="attack-priorities" data-design-id="game-targets" data-design-name="Основные цели" data-design-dynamic-text="true" style={style} aria-label={ru ? 'Основные цели атаки' : 'Primary attack objectives'}>
       <div className="attack-priorities__title">{ru ? 'Цели удара' : 'Attack objectives'}</div>
       {objectives.map((objective, index) => (
         <div className="attack-priorities__row" key={objective.name}>
@@ -226,12 +225,14 @@ export default function HUD({ simpleMode = false }) {
     activeScenario,
     events,
     airTargets,
+    searchRadars,
     sensorContacts,
-    missiles,
   } = useEngine(state => state.visualSnapshot);
   const selectedTrackId = useEngine(state => state.selectedTrackId);
-  const selectedMissileId = useEngine(state => state.selectedMissileId);
   const selectedBatteryId = useEngine(state => state.selectedBatteryId);
+  const selectedSearchRadarId = useEngine(state => state.selectedSearchRadarId);
+  const selectedSearchRadarOperational = useEngine(state => state.searchRadars
+    .find(radar => radar.id === state.selectedSearchRadarId)?.operational ?? null);
   const timeScale = useEngine(state => state.timeScale);
   const deployPhase = useEngine(state => state.deployPhase);
   const draftBattery = useEngine(state => state.draftBattery);
@@ -246,11 +247,21 @@ export default function HUD({ simpleMode = false }) {
   const rotateRadar = useEngine(state => state.rotateRadar);
   const confirmRadarHeading = useEngine(state => state.confirmRadarHeading);
   const setSelectedBattery = useEngine(state => state.setSelectedBattery);
+  const toggleSearchRadarOperational = useEngine(state => state.toggleSearchRadarOperational);
   const setAllBatteriesControlMode = useEngine(state => state.setAllBatteriesControlMode);
+  const launchSkyfallFromMwg = useEngine(state => state.launchSkyfallFromMwg);
 
   const activeTrack = tracks.find(track => track.id === selectedTrackId);
+  const selectedBattery = batteries.find(battery => battery.id === selectedBatteryId) ?? null;
+  const selectedMwg = selectedBattery?.category === 'GAZ' ? selectedBattery : null;
+  const selectedSearchRadarSnapshot = searchRadars
+    .find(radar => radar.id === selectedSearchRadarId) ?? null;
+  const selectedSearchRadar = selectedSearchRadarSnapshot ? {
+    ...selectedSearchRadarSnapshot,
+    operational: selectedSearchRadarOperational ?? selectedSearchRadarSnapshot.operational,
+  } : null;
   const activeTarget = airTargets.find(target => target.id === activeTrack?.targetId);
-  const selectedBattery = batteries.find(battery => battery.id === selectedBatteryId);
+  const engagementCoordination = activeTarget?.engagementCoordination ?? null;
   const batteryOptions = activeTrack ? batteries
     .filter(battery => battery.controlMode !== BATTERY_CONTROL_MODE.HOLD)
     .map(battery => ({
@@ -259,49 +270,15 @@ export default function HUD({ simpleMode = false }) {
     distanceKm: getLauncherDistance(battery, activeTrack),
   })) : [];
   const readyBatteries = batteryOptions.filter(option => option.status === ENGAGEMENT_STATUS.READY);
-  const recommendedBattery = (readyBatteries.length > 0 ? readyBatteries : batteryOptions)
+  const coordinatedBattery = engagementCoordination?.assignedBatteryId
+    ? batteryOptions.find(option => option.battery.id === engagementCoordination.assignedBatteryId)
+    : null;
+  const recommendedBattery = coordinatedBattery ?? (readyBatteries.length > 0 ? readyBatteries : batteryOptions)
     .sort((first, second) => (first.distanceKm ?? Infinity) - (second.distanceKm ?? Infinity))[0] ?? null;
-  const debugBattery = selectedBattery ?? recommendedBattery?.battery ?? null;
-  const interceptDebug = activeTrack && activeTarget && debugBattery
-    ? evaluateBatteryInterceptFeasibility({
-      battery: debugBattery,
-      track: activeTrack,
-      target: activeTarget,
-    })
-    : null;
-  const debugInterceptProbability = activeTrack && activeTarget && debugBattery && interceptDebug
-    ? calculateInterceptProbability({
-      battery: debugBattery,
-      track: activeTrack,
-      target: activeTarget,
-      interceptSolution: interceptDebug,
-    })
-    : 0;
-  const debugInterceptSolutionState = getInterceptSolutionState(
-    interceptDebug,
-    debugInterceptProbability,
-  );
-  const activeSensorContacts = activeTrack
-    ? sensorContacts.filter(contact => contact.targetId === activeTrack.targetId)
-    : [];
-  const activeInterceptor = missiles.find(missile => missile.id === selectedMissileId)
-    ?? (activeTrack ? missiles.find(missile => missile.trackId === activeTrack.id) : null);
-  const activeInterceptorSpec = activeInterceptor
-    ? getInterceptorSpec(activeInterceptor.interceptorSpecId)
-    : null;
   const autoPlanningBattery = activeTrack
     ? batteries.find(battery => (
       battery.recommendedTrackId === activeTrack.id && battery.autoDecision
     ))
-    : null;
-  const missileInterceptDebug = activeInterceptor && activeTarget && activeInterceptorSpec
-    ? evaluateInterceptFeasibility({
-      launcher: null,
-      target: activeTarget,
-      track: activeTrack,
-      interceptorSpec: activeInterceptorSpec,
-      currentInterceptor: activeInterceptor,
-    })
     : null;
   const trackAgeSeconds = activeTrack
     ? Math.max(0, simulationTime - activeTrack.lastUpdateTime)
@@ -323,13 +300,15 @@ export default function HUD({ simpleMode = false }) {
 
   return (
     <div className="hud" id="sam-simulator-hud">
-      <header className="hud-brand" id="hud-brand" data-design-id="game-brand" data-design-name="Название игры" style={{ ...(panelStyle('hud') ?? {}), ...(brandDesign ?? {}) }}>
-        <div className="hud-brand__mark" aria-hidden="true" />
-        <div>
-          <div className="hud-brand__name">SAM Simulator</div>
-          <div className="hud-brand__context">{localizeScenarioName(activeScenario.name, ru)} · {ru ? 'Тактическая воздушная обстановка' : 'Tactical airspace'}</div>
-        </div>
-      </header>
+      {!simpleMode && (
+        <header className="hud-brand" id="hud-brand" data-design-id="game-brand" data-design-name="Название игры" style={{ ...(panelStyle('hud') ?? {}), ...(brandDesign ?? {}) }}>
+          <div className="hud-brand__mark" aria-hidden="true" />
+          <div>
+            <div className="hud-brand__name">SAM Simulator</div>
+            <div className="hud-brand__context">{localizeScenarioName(activeScenario.name, ru)} · {ru ? 'Тактическая воздушная обстановка' : 'Tactical airspace'}</div>
+          </div>
+        </header>
+      )}
 
       {commandMode && <AttackPriorities targets={airTargets} language={language} style={{ ...(panelStyle('targets') ?? {}), ...(targetsDesign ?? {}) }} />}
 
@@ -345,7 +324,7 @@ export default function HUD({ simpleMode = false }) {
             ].map(([mode, label]) => (
               <button
                 key={mode}
-                className={globalControlMode === mode ? 'is-active' : ''}
+                className={`fire-mode-button fire-mode-button--${mode.toLowerCase()} ${globalControlMode === mode ? 'is-active' : ''}`}
                 onClick={() => setAllBatteriesControlMode(mode)}
                 title={ru ? ({ AUTO: 'Автоматическое ведение огня', ASSIST: 'Рекомендация оператора', MANUAL: 'Ручное ведение огня', HOLD: 'Огонь запрещён' }[mode]) : mode}
               >
@@ -377,7 +356,7 @@ export default function HUD({ simpleMode = false }) {
               >
                 <div>
                   <span className="network-row__id u-mono">{battery.id}</span>
-                  <small>{battery.type}</small>
+                  <small>{battery.displayName ?? SYSTEM_CATALOG[battery.category]?.displayName ?? battery.type}</small>
                 </div>
                 <span className={`network-row__status ${battery.missilesLeft > 0 ? 'is-success' : 'is-hostile'}`}>
                   {battery.missilesLeft > 0 ? `READY ${battery.missilesLeft}` : 'EMPTY'}
@@ -403,7 +382,7 @@ export default function HUD({ simpleMode = false }) {
         )}
       </aside>}
 
-      <aside className="hud-context" id="hud-context-panel" data-design-id="game-information" data-design-name="Информационная панель" style={{ ...(panelStyle('info') ?? {}), ...(infoDesign ?? {}) }}>
+      {(deployPhase || activeTrack || selectedSearchRadar || selectedBattery) && <aside className="hud-context" id="hud-context-panel" data-design-id="game-information" data-design-name="Информационная панель" data-design-dynamic-text="true" style={{ ...(panelStyle('info') ?? {}), ...(infoDesign ?? {}) }}>
         {deployPhase && <DeploymentPanel
           deployPhase={deployPhase}
           draftBattery={draftBattery}
@@ -474,79 +453,43 @@ export default function HUD({ simpleMode = false }) {
                 />
               )}
             </div>
+            {commandMode && debugOverlayVisible && engagementCoordination && (
+              <div className="engagement-coordinator-debug">
+                <div className="hud-section__heading">FIRE CONTROL STATE</div>
+                <DataRow label="TARGET" value={activeTarget ? getTargetDisplayName(activeTarget) : activeTrack.id} />
+                <DataRow label="THREAT" value={engagementCoordination.threatScore == null ? '—' : `${Math.round(engagementCoordination.threatScore)} / ${engagementCoordination.threatLevel ?? '—'}`} />
+                <DataRow label="STATE" value={engagementCoordination.state} />
+                <DataRow label="SYSTEM" value={engagementCoordination.assignedSystem ?? '—'} />
+                <DataRow label="LAUNCHER" value={engagementCoordination.assignedLauncherId ?? '—'} />
+                <DataRow label="WEAPON" value={engagementCoordination.assignedWeapon ?? '—'} />
+                <DataRow label="QUALITY" value={engagementCoordination.quality == null ? '—' : `${Math.round(engagementCoordination.quality * 100)}%`} />
+                <DataRow label="EXPECTED" value={engagementCoordination.expectedQuality == null ? '—' : `${Math.round(engagementCoordination.expectedQuality * 100)}%`} />
+                <DataRow label="WINDOW" value={engagementCoordination.window} />
+                <DataRow label="RESERVATION" value={engagementCoordination.reservation ?? '—'} />
+                <DataRow label="INTERCEPTOR" value={engagementCoordination.currentInterceptorId ?? '—'} />
+                <DataRow label="ASSESSMENT" value={engagementCoordination.assessment ?? '—'} />
+                <DataRow label="FALLBACK" value={engagementCoordination.bestFallbackBatteryId
+                  ? `${engagementCoordination.bestFallbackBatteryId} · ${engagementCoordination.bestFallbackQuality == null ? '—' : `${Math.round(engagementCoordination.bestFallbackQuality * 100)}%`}`
+                  : '—'} />
+                <DataRow label="REASON" value={engagementCoordination.reason} />
+                {engagementCoordination.candidates?.length > 0 && (
+                  <details className="engagement-coordinator-debug__candidates">
+                    <summary>CANDIDATES · {engagementCoordination.candidates.length}</summary>
+                    {engagementCoordination.candidates.map(candidate => (
+                      <div className={`fire-control-candidate is-${String(candidate.decision).toLowerCase()}`} key={`${candidate.batteryId}:${candidate.launcherId ?? 'none'}`}>
+                        <span>{candidate.batteryId}</span>
+                        <b>{candidate.quality == null ? '--' : Math.round(candidate.quality * 100)}</b>
+                        <small>{candidate.decision}: {candidate.reason}</small>
+                      </div>
+                    ))}
+                  </details>
+                )}
+              </div>
+            )}
             {commandMode && (
               <button className="target-lock__details-toggle" onClick={() => setTechnicalDetailsOpen(value => !value)}>
                 {technicalDetailsOpen ? (ru ? 'Скрыть техданные' : 'Hide technical details') : (ru ? 'Техданные' : 'Technical details')}
               </button>
-            )}
-
-            {debugOverlayVisible && (
-              <div className="target-debug-data">
-                <div className="hud-eyebrow">SENSOR / KINEMATICS DEBUG</div>
-                <DataRow label="EVIDENCE" value={(activeTrack.detectionEvidence ?? 0).toFixed(3)} />
-                <DataRow
-                  label="THRESHOLDS"
-                  value={activeTrack.sensorThresholds
-                    ? `${activeTrack.sensorThresholds.detected.toFixed(2)} / ${activeTrack.sensorThresholds.tracked.toFixed(2)} / ${activeTrack.sensorThresholds.identified.toFixed(2)}`
-                    : '—'}
-                />
-                <DataRow label="SCAN OPPORTUNITY" value={`${activeTrack.lastScanOpportunityCount ?? 0}`} />
-                <DataRow label="LAST CONTRIBUTION" value={(activeTrack.lastSensorContribution ?? 0).toFixed(3)} />
-                <DataRow label="SENSOR CONTACTS" value={`${activeSensorContacts.length}`} />
-                <DataRow label="CLASS CONF" value={`${Math.round((activeTrack.classificationConfidence ?? 0) * 100)}%`} />
-                <DataRow label="ID CONF" value={`${Math.round((activeTrack.identificationConfidence ?? 0) * 100)}%`} />
-                <DataRow label="TARGET ETA" value={interceptDebug ? `${interceptDebug.targetEtaSec.toFixed(1)} s` : '—'} />
-                <DataRow label="TIME TO TARGET" value={interceptDebug && Number.isFinite(interceptDebug.targetEtaSec) ? `${interceptDebug.targetEtaSec.toFixed(1)} s` : '—'} />
-                <DataRow label="MIN TOF" value={interceptDebug?.minimumTimeToInterceptSec != null ? `${interceptDebug.minimumTimeToInterceptSec.toFixed(1)} s` : '—'} />
-                <DataRow label="PREDICTED TOF" value={interceptDebug?.predictedInterceptTimeSec != null ? `${interceptDebug.predictedInterceptTimeSec.toFixed(1)} s` : '—'} />
-                <DataRow label="TIME TO INTERCEPT" value={interceptDebug?.predictedInterceptTimeSec != null ? `${interceptDebug.predictedInterceptTimeSec.toFixed(1)} s` : '—'} />
-                <DataRow label="INTERCEPT DIST" value={interceptDebug?.interceptDistanceKm != null ? `${interceptDebug.interceptDistanceKm.toFixed(1)} km` : '—'} />
-                <DataRow
-                  label="FEASIBILITY"
-                  value={interceptDebug?.status ?? '—'}
-                  tone={interceptDebug?.status === INTERCEPT_FEASIBILITY.NO_SOLUTION ? 'is-hostile' : 'is-success'}
-                />
-                <DataRow
-                  label="INTERCEPT PROBABILITY"
-                  value={`${Math.round(debugInterceptProbability * 100)}%`}
-                  tone={debugInterceptProbability >= 0.52 ? 'is-success' : 'is-warning'}
-                />
-                <DataRow
-                  label="INTERCEPT SOLUTION"
-                  value={debugInterceptSolutionState.replaceAll('_', ' ')}
-                  tone={debugInterceptSolutionState === 'NO_SOLUTION'
-                    ? 'is-hostile'
-                    : debugInterceptSolutionState === 'READY'
-                      ? 'is-success'
-                      : 'is-warning'}
-                />
-                <DataRow label="MISSILE STATE" value={activeInterceptor?.lifecycleState ?? '—'} />
-                <DataRow label="MISSILE" value={activeInterceptorSpec?.publicDisplay.displayName ?? '—'} />
-                <DataRow label="SPEED" value={activeInterceptor ? `${Math.round(activeInterceptor.speedKmh)} km/h` : '—'} />
-                <DataRow label="ALTITUDE" value={activeInterceptor ? `${(activeInterceptor.altitudeM / 1000).toFixed(2)} km` : '—'} />
-                <DataRow label="DISTANCE FLOWN" value={activeInterceptor ? `${activeInterceptor.distanceTraveledKm.toFixed(1)} km` : '—'} />
-                <DataRow label="HEADING / DESIRED" value={activeInterceptor ? `${activeInterceptor.heading.toFixed(1)}° / ${(activeInterceptor.desiredHeading ?? activeInterceptor.heading).toFixed(1)}°` : '—'} />
-                <DataRow label="COURSE CORRECTION" value={activeInterceptor ? `${(activeInterceptor.headingCorrectionDeg ?? 0).toFixed(1)}°` : '—'} />
-                <DataRow label="CURRENT TURN RATE" value={activeInterceptor ? `${(activeInterceptor.turnRateDegPerSec ?? 0).toFixed(1)}°/s` : '—'} />
-                <DataRow label="MAX TURN RATE" value={activeInterceptor ? `${(activeInterceptor.maximumTurnRateDegPerSec ?? 0).toFixed(1)}°/s` : '—'} />
-                <DataRow label="TURN RADIUS" value={Number.isFinite(activeInterceptor?.turnRadiusKm) ? `${activeInterceptor.turnRadiusKm.toFixed(2)} km` : '—'} />
-                <DataRow label="FLIGHT PHASE" value={activeInterceptor?.kinematicPhase ?? '—'} />
-                <DataRow label="MOTOR PHASE" value={activeInterceptor?.motorPhase ?? '—'} />
-                <DataRow label="MOTOR LEFT" value={activeInterceptor ? `${(activeInterceptor.motorTimeLeftSec ?? 0).toFixed(1)} s` : '—'} />
-                <DataRow label="NET ACCEL" value={activeInterceptor ? `${(activeInterceptor.currentAccelerationMps2 ?? 0).toFixed(1)} m/s²` : '—'} />
-                <DataRow label="DRAG DECEL" value={activeInterceptor ? `-${(activeInterceptor.dragDecelerationMps2 ?? 0).toFixed(1)} m/s²` : '—'} />
-                <DataRow label="TURN LOSS" value={activeInterceptor ? `-${(activeInterceptor.turnLossMps2 ?? 0).toFixed(1)} m/s²` : '—'} />
-                <DataRow label="CLIMB LOSS" value={activeInterceptor ? `-${(activeInterceptor.altitudeEnergyLossMps2 ?? 0).toFixed(1)} m/s²` : '—'} />
-                <DataRow label="DESCENT GAIN" value={activeInterceptor ? `+${(activeInterceptor.descentEnergyRecoveryMps2 ?? 0).toFixed(1)} m/s²` : '—'} />
-                <DataRow label="AIR DENSITY" value={activeInterceptor ? `${((activeInterceptor.densityMultiplier ?? 1) * 100).toFixed(0)}%` : '—'} />
-                <DataRow label="RESIDUAL ENERGY" value={activeInterceptor ? `${Math.round((activeInterceptor.energyRatio ?? 0) * 100)}%` : '—'} />
-                <DataRow label="ENERGY" value={activeInterceptor?.energyState ?? '—'} tone={activeInterceptor?.energyState === 'ENERGY_CRITICAL' ? 'is-hostile' : activeInterceptor?.energyState === 'ENERGY_LOW' ? 'is-warning' : 'is-success'} />
-                <DataRow label="TARGET DISTANCE" value={Number.isFinite(activeInterceptor?.distanceToTargetKm) ? `${(activeInterceptor.distanceToTargetKm * 1000).toFixed(0)} m` : '—'} />
-                <DataRow label="PREDICTED INTERCEPT" value={missileInterceptDebug?.predictedInterceptTimeSec != null ? `${missileInterceptDebug.predictedInterceptTimeSec.toFixed(1)} s · ${missileInterceptDebug.status}` : '—'} />
-                <DataRow label="SWEPT APPROACH" value={Number.isFinite(activeInterceptor?.sweptClosestApproachM) ? `${activeInterceptor.sweptClosestApproachM.toFixed(0)} m` : '—'} />
-                <DataRow label="FUSE RADIUS" value={activeInterceptorSpec ? `${activeInterceptorSpec.gameplayPhysics.proximityFuseRadiusM} m` : '—'} />
-                <DataRow label="FLIGHT / MAX" value={activeInterceptorSpec && activeInterceptor ? `${activeInterceptor.flightTime.toFixed(1)} / ${activeInterceptorSpec.gameplayPhysics.maxFlightTimeSec} s` : '—'} />
-              </div>
             )}
 
             <div className="hud-section__heading target-lock__engagement">{ru ? 'Перехват' : 'Engagement'}</div>
@@ -573,37 +516,98 @@ export default function HUD({ simpleMode = false }) {
                 ? `${recommendedBattery.battery.weaponType === 'GUN_AA' ? (ru ? 'Огонь' : 'Fire') : (ru ? 'Пуск' : 'Engage')} · ${recommendedBattery.battery.id}`
                 : (ru ? 'Ожидание готовности' : 'Awaiting readiness')}
             </button>
+            {selectedMwg && (
+              <button
+                className="engage-button mwg-fpv-panel__target-launch"
+                disabled={(selectedMwg.fpvInventory ?? 0) <= 0}
+                onClick={() => launchSkyfallFromMwg(selectedMwg.id)}
+              >
+                {ru ? `FPV ПО ТРАССЕ · ${selectedMwg.fpvInventory ?? 0}` : `LAUNCH FPV · ${selectedMwg.fpvInventory ?? 0}`}
+              </button>
+            )}
           </section>
         )}
-      </aside>
+        {selectedMwg && !deployPhase && !activeTrack && (
+          <section className="mwg-fpv-panel">
+            <div className="hud-eyebrow">{ru ? 'Мобильная огневая группа' : 'Mobile fire group'}</div>
+            <div className="target-lock__id">{selectedMwg.displayName}</div>
+            <div className="target-lock__data">
+              <DataRow label="FPV" value="Skyfall P1-SUN" mono={false} />
+              <DataRow label={ru ? 'Осталось' : 'Inventory'} value={`${selectedMwg.fpvInventory ?? 0} / ${selectedMwg.fpvCapacity ?? 4}`} />
+              <DataRow label={ru ? 'Управление' : 'Control'} value="MANUAL · ADVANCED 3D" />
+            </div>
+            <button
+              className="engage-button"
+              disabled={(selectedMwg.fpvInventory ?? 0) <= 0}
+              onClick={() => launchSkyfallFromMwg(selectedMwg.id)}
+            >
+              {(selectedMwg.fpvInventory ?? 0) > 0
+                ? (ru ? 'ЗАПУСТИТЬ FPV' : 'LAUNCH FPV')
+                : (ru ? 'FPV ИСЧЕРПАНЫ' : 'FPV DEPLETED')}
+            </button>
+          </section>
+        )}
+        {selectedSearchRadar && !deployPhase && !activeTrack && (
+          <SearchRadarPanel
+            radar={selectedSearchRadar}
+            tracks={tracks}
+            contacts={sensorContacts}
+            language={language}
+            onToggle={() => toggleSearchRadarOperational(selectedSearchRadar.id)}
+          />
+        )}
+        {!deployPhase && (selectedSearchRadar || selectedBattery) && <section className="hud-section">
+          <div className="hud-eyebrow">{(selectedSearchRadar ?? selectedBattery).id}</div>
+          <button className="engage-button" onClick={() => {
+            const state = useGameStore.getState();
+            useEngine.getState().releaseControllableControl();
+            state.openOlsFeed(state.scene, (selectedSearchRadar ?? selectedBattery).id);
+          }}>OLS / EO</button>
+        </section>}
+      </aside>}
 
-      <div className="c2-control" id="c2-menu" data-design-id="game-command" data-design-name="Командование ПВО" style={commandDesign}>
+      <div className="c2-control" id="c2-menu" data-design-id="game-command" data-design-name="Командование ПВО" data-design-dynamic-text="true" style={commandDesign}>
         {buildMenuOpen && !deployPhase && (
           <div className="c2-menu">
             <div className="hud-eyebrow">{ru ? 'Развернуть ЗРК' : 'Deploy system'}</div>
             <div className="c2-menu__tabs">
-              {['GUN', 'SHORT', 'MEDIUM', 'LONG'].map(category => (
+              {DEPLOYABLE_SYSTEM_IDS.map(category => (
                 <button
                   key={category}
                   onClick={() => setCategory(category)}
                   className={selectedCategory === category ? 'is-active' : ''}
                 >
-                  {ru ? ({ GUN: 'ПУШЕЧНАЯ', SHORT: 'БЛИЖНЯЯ', MEDIUM: 'СРЕДНЯЯ', LONG: 'ДАЛЬНЯЯ' }[category]) : category}
+                  {SYSTEM_CATALOG[category].displayName}
                 </button>
               ))}
             </div>
+            <div className="hud-eyebrow c2-menu__group-label">{ru ? 'Обзорные РЛС' : 'Search radars'}</div>
+            <div className="c2-menu__tabs c2-menu__tabs--radars">
+              {SEARCH_RADAR_PROFILE_IDS.map(profileId => {
+                const profile = getSearchRadarProfile(profileId);
+                return <button
+                  key={profileId}
+                  onClick={() => setCategory(profileId)}
+                  className={selectedCategory === profileId ? 'is-active' : ''}
+                >{ru ? profile.displayName : profile.englishName}</button>;
+              })}
+            </div>
             {selectedCategory && (
-              <div className="c2-system-detail">
-                <strong>{SYSTEM_CATALOG[selectedCategory].type}</strong>
-                {selectedCategory === 'GUN' ? (
+              <div className="c2-system-detail" data-design-dynamic-text="true">
+                {getSearchRadarProfile(selectedCategory) ? <SearchRadarDeployDetail
+                  profile={getSearchRadarProfile(selectedCategory)}
+                  language={language}
+                /> : <>
+                <strong>{SYSTEM_CATALOG[selectedCategory].displayName}</strong>
+                {SYSTEM_CATALOG[selectedCategory].weaponType === 'GUN_AA' ? (
                   <>
-                    <DataRow label={ru ? 'Тип' : 'Type'} value={ru ? 'Зенитная самоходная установка' : 'Self-propelled anti-aircraft gun'} />
+                    <DataRow label={ru ? 'Тип' : 'Type'} value={selectedCategory === 'GAZ' ? (ru ? 'Мобильная огневая группа' : 'Mobile fire group') : (ru ? 'Зенитная самоходная установка' : 'Self-propelled anti-aircraft gun')} />
                     <DataRow label={ru ? 'Роль' : 'Role'} value={ru ? 'Ближняя защита от БПЛА' : 'Close-range UAV defence'} />
-                    <DataRow label={ru ? 'Дальность' : 'Range'} value={`~${getGunSystemSpec(SYSTEM_CATALOG.GUN.gunSpecId).engagementRangeKm} км`} />
-                    <DataRow label={ru ? 'Вооружение' : 'Armament'} value={getGunSystemSpec(SYSTEM_CATALOG.GUN.gunSpecId).weaponLabel} />
-                    <DataRow label={ru ? 'Боезапас' : 'Ammunition'} value={`${getGunSystemSpec(SYSTEM_CATALOG.GUN.gunSpecId).ammunitionRounds} ${ru ? 'снарядов' : 'rounds'}`} />
-                    <DataRow label={ru ? 'Очередь' : 'Burst'} value={`${getGunSystemSpec(SYSTEM_CATALOG.GUN.gunSpecId).roundsPerBurst} ${ru ? 'выстрелов' : 'rounds'}`} />
-                    <DataRow label={ru ? 'Начальная скорость' : 'Muzzle velocity'} value={`${getGunSystemSpec(SYSTEM_CATALOG.GUN.gunSpecId).muzzleVelocityMps} м/с`} />
+                    <DataRow label={ru ? 'Дальность' : 'Range'} value={`~${getGunSystemSpec(SYSTEM_CATALOG[selectedCategory].gunSpecId).engagementRangeKm} км`} />
+                    <DataRow label={ru ? 'Вооружение' : 'Armament'} value={getGunSystemSpec(SYSTEM_CATALOG[selectedCategory].gunSpecId).weaponLabel} />
+                    <DataRow label={ru ? 'Боезапас' : 'Ammunition'} value={`${getGunSystemSpec(SYSTEM_CATALOG[selectedCategory].gunSpecId).ammunitionRounds} ${ru ? 'снарядов' : 'rounds'}`} />
+                    <DataRow label={ru ? 'Очередь' : 'Burst'} value={`${getGunSystemSpec(SYSTEM_CATALOG[selectedCategory].gunSpecId).roundsPerBurst} ${ru ? 'выстрелов' : 'rounds'}`} />
+                    <DataRow label={ru ? 'Начальная скорость' : 'Muzzle velocity'} value={`${getGunSystemSpec(SYSTEM_CATALOG[selectedCategory].gunSpecId).muzzleVelocityMps} м/с`} />
                   </>
                 ) : (
                   <>
@@ -612,6 +616,7 @@ export default function HUD({ simpleMode = false }) {
                     <DataRow label={ru ? 'Скорость' : 'Speed'} value={`${getInterceptorSpec(SYSTEM_CATALOG[selectedCategory].interceptorSpecId).publicDisplay.maxSpeedKmh} км/ч`} />
                   </>
                 )}
+                </>}
                 <button className="c2-deploy-button" onClick={() => startDeploy(selectedCategory)}>
                   {ru ? 'Развернуть' : 'Deploy system'}
                 </button>
@@ -621,6 +626,7 @@ export default function HUD({ simpleMode = false }) {
         )}
         <button
           className="c2-toggle"
+          data-design-dynamic-text="true"
           onClick={toggleBuildMenu}
           disabled={deployPhase !== null}
           title={ru ? 'Командование и развертывание' : 'Command and deployment'}
@@ -629,7 +635,7 @@ export default function HUD({ simpleMode = false }) {
         </button>
       </div>
 
-      <footer className="sim-controls" id="simulation-controls" data-design-id="game-time-controls" data-design-name="Управление временем" style={timeDesign}>
+      <footer className="sim-controls" id="simulation-controls" data-design-id="game-time-controls" data-design-name="Управление временем" data-design-dynamic-text="true" style={timeDesign}>
         <div className="sim-controls__clock">
           <small>{ru ? 'Симуляция' : 'Simulation'}</small>
           <span className="u-mono">{formatTime(simulationTime)} <i>Z</i></span>
@@ -668,10 +674,11 @@ function DeploymentPanel({ deployPhase, draftBattery, rotateRadar, confirmRadarH
   }
 
   const instruction = {
-    UNIT: ru ? 'Установите Gepard 1A2' : 'Place Gepard 1A2',
+    UNIT: `${ru ? 'Установите' : 'Place'} ${draftBattery.displayName ?? draftBattery.type}`,
+    SEARCH_RADAR: `${ru ? 'Установите обзорную РЛС' : 'Place search radar'} ${draftBattery.displayName}`,
     FDC: ru ? 'Установите командный пункт' : 'Place command post',
     RADAR: ru ? 'Установите РЛС' : 'Place radar sensor',
-    LAUNCHER: ru ? `Установите пусковую ${draftBattery.components.launchers.length + 1} из 2` : `Place launcher ${draftBattery.components.launchers.length + 1} of 2`,
+    LAUNCHER: ru ? `Установите пусковую ${(draftBattery.components.launchers?.length ?? 0) + 1} из 2` : `Place launcher ${(draftBattery.components.launchers?.length ?? 0) + 1} of 2`,
   }[deployPhase];
   return (
     <section className="deployment-panel" id="deployment-panel">
@@ -681,4 +688,42 @@ function DeploymentPanel({ deployPhase, draftBattery, rotateRadar, confirmRadarH
       <div className="deployment-panel__hint">{ru ? 'Укажите точку на карте' : 'Click a position on the map'}</div>
     </section>
   );
+}
+
+function SearchRadarDeployDetail({ profile, language }) {
+  const ru = isRussian(language);
+  return <>
+    <strong>{ru ? profile.displayName : profile.englishName}</strong>
+    <DataRow label={ru ? 'Тип' : 'Type'} value={ru ? 'Обзорная РЛС без вооружения' : 'Sensor-only search radar'} />
+    <DataRow label={ru ? 'Роль' : 'Role'} value={profile.role.replaceAll('_', ' ')} />
+    <DataRow label={ru ? 'Обзор' : 'Coverage'} value={`~${profile.nominalRangeKm} км`} />
+    <DataRow label={ru ? 'Режим' : 'Mode'} value={profile.scanModeLabel} />
+  </>;
+}
+
+function SearchRadarPanel({ radar, tracks, contacts, language, onToggle }) {
+  const ru = isRussian(language);
+  const sensorId = radar.components.radar?.id;
+  const radarContacts = contacts.filter(contact => contact.sourceRadarId === sensorId);
+  const contributingTracks = tracks.filter(track => track.contributingSensors?.includes(sensorId));
+  const bestQuality = contributingTracks.reduce((best, track) => Math.max(best, track.trackQuality ?? 0), 0);
+  return <section className="target-lock search-radar-panel">
+    <div className="target-lock__header">
+      <div>
+        <div className="hud-eyebrow">{ru ? 'Обзорная РЛС' : 'Search radar'}</div>
+        <div className="target-lock__id">{ru ? radar.displayName : radar.englishName}</div>
+      </div>
+      <div className={`status-pill ${radar.operational ? 'is-tracked' : 'is-lost'}`}>
+        {radar.operational ? 'ACTIVE' : 'OFF'}
+      </div>
+    </div>
+    <DataRow label={ru ? 'Режим' : 'Mode'} value={radar.scanModeLabel} />
+    <DataRow label={ru ? 'Номинальная дальность' : 'Nominal range'} value={`${radar.radarRangeKm} км`} />
+    <DataRow label={ru ? 'Треки' : 'Tracks'} value={contributingTracks.length} />
+    <DataRow label={ru ? 'Измерения' : 'Measurements'} value={radarContacts.reduce((sum, contact) => sum + (contact.totalOpportunityCount ?? 0), 0)} />
+    <DataRow label={ru ? 'Лучшее качество трека' : 'Best track quality'} value={`${Math.round(bestQuality * 100)}%`} />
+    <button className="engage-button search-radar-panel__toggle" onClick={onToggle}>
+      {radar.operational ? (ru ? 'ВЫКЛЮЧИТЬ РЛС' : 'RADAR OFF') : (ru ? 'ВКЛЮЧИТЬ РЛС' : 'RADAR ACTIVE')}
+    </button>
+  </section>;
 }

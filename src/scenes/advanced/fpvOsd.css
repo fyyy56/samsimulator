@@ -1,0 +1,91 @@
+.fpv-osd {
+  position: absolute; inset: 0; color: #fff;
+  font: 800 clamp(16px, 2.05vw, 30px)/1.35 'Courier New', monospace;
+  font-variant-numeric: tabular-nums; letter-spacing: .035em;
+  -webkit-text-stroke: .45px #101518;
+  text-shadow: -1px -1px 0 #101518, 1px -1px 0 #101518, -1px 1px 0 #101518, 1px 1px 0 #101518;
+}
+.fpv-osd small { font-size: .5em; -webkit-text-stroke: 0; letter-spacing: .04em; }
+.fpv-osd__identity { position: absolute; top: 17%; left: 50%; transform: translateX(-50%); text-align: center; }
+.fpv-osd__identity small { display: block; font-size: .4em; }
+.fpv-osd__link { position: absolute; right: 8%; top: 21%; }
+.fpv-osd__link span { font-size: .6em; }
+.fpv-osd__speed { position: absolute; left: 6%; top: 42%; }
+.fpv-osd__target-speed { position: absolute; left: 6%; top: 49%; line-height: 1.8; }
+.fpv-osd__altitude { position: absolute; right: 8%; top: 39%; line-height: 1.9; }
+.fpv-osd__power { position: absolute; left: 6%; bottom: 15%; line-height: 1.7; }
+.fpv-osd__power .is-low { color: #ffd3b8; }
+.fpv-osd__time { position: absolute; right: 29%; bottom: 16%; }
+.fpv-osd__range { position: absolute; right: 28%; top: 46%; line-height: 1.65; }
+.fpv-osd__course { position: absolute; left: 50%; bottom: 12%; transform: translateX(-50%); }
+.fpv-osd__help { position: absolute; left: 50%; bottom: 5%; transform: translateX(-50%);
+  font-size: 8px; opacity: .62; -webkit-text-stroke: 0; white-space: nowrap; }
+.fpv-osd__reticle, .fpv-osd__attitude {
+  position: absolute; left: 50%; top: 50%; width: 76px; height: 32px;
+  transform: translate(-50%, -50%); fill: none; stroke: #fff; stroke-width: 2.5;
+  filter: drop-shadow(1px 0 #000) drop-shadow(-1px 0 #000) drop-shadow(0 1px #000);
+}
+.fpv-osd__attitude { width: 150px; height: 66px; opacity: .45; stroke-width: 1; will-change: transform; }
+.fpv-osd__map {
+  position: absolute; right: 5%; bottom: 12%; width: clamp(140px, 15vw, 215px);
+  border: 1px solid #7fa594; background: rgba(4, 22, 17, .88); color: #d9f7e6;
+  font: 600 11px/1.4 ui-monospace, monospace; -webkit-text-stroke: 0; letter-spacing: .02em;
+}
+.fpv-osd__map header { display: flex; justify-content: space-between; gap: 4px; padding: 5px 7px; background: #08120f; font-size: 10px; }
+.fpv-osd__map header small { font-size: 8px; }
+.fpv-osd__map svg { display: block; width: 100%; max-height: 160px; color: #408262; }
+.fpv-osd__map circle, .fpv-osd__map-cone { fill: none; stroke: #43876a; stroke-width: .7; }
+.fpv-osd__own { fill: white; }
+.fpv-osd__contact circle { fill: #ffe8a0; stroke: #fff; stroke-width: 1.5; }
+.fpv-osd__contact path { stroke: #ffe8a0; stroke-width: 1; }
+.fpv-osd__contact .fpv-osd__uncertainty { fill: none; opacity: .48; stroke-dasharray: 2 3; }
+.fpv-osd__contact.is-estimated circle { fill: none; stroke-dasharray: 2 2; }
+.fpv-osd__map footer { min-height: 46px; padding: 4px 8px; border-top: 1px solid #3f6c59; }
+.fpv-osd__map footer span { display: block; font-size: 10px; }
+.is-thermal .fpv-osd__map { filter: grayscale(1); }
+.is-fpv-camera .advanced-control-summary { top: 60px; padding: 3px 8px; background: rgba(8, 17, 20, .7); border-radius: 4px; }
+.is-fpv-camera .advanced-control-summary button { min-height: 24px; border-radius: 2px; }
+.fpv-feed-actions {
+  position: fixed; z-index: 18; top: 14px; right: 16px; display: flex; gap: 6px;
+  opacity: .72; transition: opacity .2s ease;
+}
+.fpv-feed-actions:hover { opacity: 1; }
+.fpv-feed-actions button {
+  min-height: 27px; padding: 4px 8px; border: 1px solid rgba(255,255,255,.28);
+  border-radius: 2px; color: rgba(255,255,255,.88); background: rgba(2,7,8,.58);
+  font: 700 9px/1 ui-monospace, monospace; cursor: pointer;
+}
+.fpv-osd__signal-lost {
+  position: absolute; inset: 0; display: grid; place-content: center; text-align: center;
+  background: rgba(0,0,0,.38); animation: fpv-signal-drop .18s steps(2,end) infinite;
+}
+.fpv-osd__signal-lost strong { font-size: clamp(28px,5vw,72px); letter-spacing: .09em; }
+.fpv-osd__signal-lost small { display: block; margin-top: 8px; font-size: 11px; }
+.is-signal-lost .advanced-fpv-grain { opacity: .45; animation-duration: .08s; }
+.is-signal-lost .advanced-fpv-feed::after { opacity: .7; animation-duration: .18s; }
+@keyframes fpv-signal-drop { 50% { transform: translateX(2px); filter: contrast(1.4); } }
+@media (max-width: 700px), (max-height: 550px) {
+  .fpv-osd__map { right: 3%; bottom: 14%; width: 125px; }
+  .fpv-osd__map svg { max-height: 80px; }
+  .fpv-osd__identity { top: 24%; }
+  .fpv-osd__link { top: 27%; right: 4%; }
+  .fpv-osd__altitude { right: 4%; top: 41%; }
+  .fpv-osd__time { left: 6%; right: auto; bottom: 9%; }
+}
+.fpv-osd__target-cue { position: absolute; display: flex; gap: 5px; transform: translate(-50%,-50%);
+  font: 700 10px/1.25 ui-monospace,monospace; -webkit-text-stroke: 0; pointer-events: none; }
+.fpv-osd__target-cue i { font: normal 28px/1 monospace; }
+.fpv-osd__target-cue span { display: grid; min-width: 82px; padding: 3px 5px;
+  background: rgba(3,8,8,.52); text-align: center; }
+.fpv-osd__target-cue b { display: block; }
+.fpv-osd__target-cue em { display: block; font-style: normal; }
+.fpv-osd__target-cue.is-estimated { opacity: .7; }
+.fpv-osd__edge-cue { position: absolute; top: 50%; display: flex; align-items: center; gap: 4px;
+  transform: translateY(-50%); font: 700 10px/1.3 ui-monospace,monospace; -webkit-text-stroke: 0; }
+.fpv-osd__edge-cue.is-left { left: 2%; }
+.fpv-osd__edge-cue.is-right { right: 2%; flex-direction: row-reverse; text-align: right; }
+.fpv-osd__edge-cue i { font: normal 38px/1 monospace; }
+.fpv-osd__map select { pointer-events: auto; width: 100%; min-width: 0;
+  color: #d9f1df; background: #102019; border: 1px solid #557562;
+  border-radius: 3px; padding: 4px; font: 10px ui-monospace, monospace;
+  -webkit-text-stroke: 0; text-shadow: none; }

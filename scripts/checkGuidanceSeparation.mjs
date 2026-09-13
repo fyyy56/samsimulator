@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { getDistanceKm } from '../src/store/geo.js';
 import { createInterceptorGuidance } from '../src/store/interceptorGuidance.js';
 
 const track = {
@@ -28,14 +27,12 @@ const second = createInterceptorGuidance(
   'MSL-002',
 );
 
-assert.notEqual(first.lateralSide, second.lateralSide);
-assert.ok(first.lateralOffsetM >= 35 && first.lateralOffsetM <= 100);
-assert.ok(second.lateralOffsetM >= 35 && second.lateralOffsetM <= 100);
-assert.ok(getDistanceKm(
-  first.commandPosition.lat,
-  first.commandPosition.lng,
-  second.commandPosition.lat,
-  second.commandPosition.lng,
-) > 0.05);
+assert.notStrictEqual(first, second);
+assert.notStrictEqual(first.commandPosition, second.commandPosition);
+assert.deepEqual(first.commandPosition, second.commandPosition,
+  'Identical measurements should produce the same deterministic PN initial solution');
+first.commandPosition.lat += 1;
+assert.notEqual(first.commandPosition.lat, second.commandPosition.lat,
+  'Each interceptor owns an independent mutable guidance state');
 
 console.log('Independent interceptor guidance-point checks passed.');

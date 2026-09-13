@@ -1,6 +1,24 @@
 import { create } from 'zustand';
 import { getInterceptorSpec } from '../data/interceptors.js';
+import { getInterceptorSeekerProfile } from '../data/seekerProfiles.js';
+import { LAUNCH_MODE } from '../data/launchProfiles.js';
+import { getLaunchProfile } from './launchProfileStore.js';
+import {
+  beginSimulationUpdateProfile,
+  createSimulationStageTimer,
+  recordSimulationSubsystem,
+  recordSimulationUpdate,
+  recordVisualPublish,
+  SIMULATION_SUBSYSTEM,
+} from './performanceMonitor.js';
+import { createWorldPosition, getWorldPosition } from './worldPosition.js';
+import { isInterceptorCompatible } from '../data/weaponCompatibility.js';
 import { getGunSystemSpec, WEAPON_SYSTEM_TYPE } from '../data/gunSystems.js';
+import {
+  getSearchRadarProfile,
+  SEARCH_RADAR_ENTITY_TYPE,
+  SEARCH_RADAR_PROFILE_IDS,
+} from '../data/searchRadarProfiles.js';
 import { advanceAirTarget, createAirTarget } from './airTargetSystem.js';
 import {
   ENGAGEMENT_STATUS,
@@ -16,7 +34,9 @@ import {
 } from './scenarios.js';
 import { createSimulationEvent, EVENT_TYPE } from './simulationEvents.js';
 import {
+  applyRadarObservation,
   applySensorEvidenceObservation,
+  coastTrack,
   formatTrackId,
   TRACK_STATE,
   updateLostTrack,
@@ -27,19 +47,25 @@ import {
   INTERCEPTOR_KINEMATIC_PHASE,
   INTERCEPTOR_PHASE,
 } from './interceptorPhysics.js';
-import { INTERCEPTOR_PHYSICS_PROFILES, SIMPLE_FLIGHT_PHASE } from './interceptorAltitudePhysics.js';
+import { SIMPLE_FLIGHT_PHASE } from './interceptorAltitudePhysics.js';
+import {
+  advanceVerticalLaunchDeparture,
+  getInterceptorLaunchPhase,
+  INTERCEPTOR_LAUNCH_PHASE,
+} from './interceptorLaunch.js';
 import {
   advanceInterceptorGuidance,
   createInterceptorGuidance,
   INTERCEPTOR_FAILURE_REASON,
   INTERCEPTOR_GUIDANCE_STATE,
 } from './interceptorGuidance.js';
+import { advanceMissileSeeker, createMissileSeeker } from './seekerSystem.js';
 import {
   advanceRadarScan,
   createRadarScanState,
-  isTargetInRadarCoverage,
+  getNetworkRadarScanOpportunities,
+  getRadarGeometry,
   RADAR_SCAN_TYPE,
-  selectNetworkRadarScanOpportunity,
 } from './radarSystem.js';
 import {
   AUTO_DEFENSE_STATUS,
@@ -48,20 +74,18 @@ import {
   DEFENSE_DOCTRINE,
   DOCTRINE_CONFIG,
   getInterceptorEngagementPolicy,
-  isBallisticTarget,
-  isPatriotBattery,
   rankThreatsForBattery,
 } from './autoDefense.js';
 import {
   evaluateInterceptFeasibility,
   INTERCEPT_FEASIBILITY,
 } from './interceptFeasibility.js';
+import { buildTargetDefenseAssessments } from './autoEngagementPlanner.js';
 import {
-  AUTO_ENGAGEMENT_DECISION,
-  buildTargetDefenseAssessments,
-  planAutomaticEngagement,
-} from './autoEngagementPlanner.js';
-import { didSweptPathsEnterRadius } from './continuousCollision.js';
+  coordinateEngagements,
+  DEFAULT_COORDINATOR_CAPABILITIES,
+} from './engagementCoordinator.js';
+import { didSweptPathsEnterRadiusMeters } from './continuousCollision.js';
 import {
   evaluateGunEngagement,
   getGunProjectileFlightTimeSec,
@@ -73,9 +97,22 @@ import {
 import {
   ageSensorEvidenceContacts,
   applySensorScanBatch,
+  getRadarSensorProfile,
   isRadarSensorOperational,
   isTrackSensorStale,
 } from './sensorDetection.js';
+import { createFireControlTargetEstimate, isAvailableNetworkTrack } from './trackDataProvider.js';
+import {
+  advanceControllableAirEntity,
+  CONTROLLABLE_CAMERA_MODE,
+  CONTROLLABLE_STATUS,
+  createControllableAirEntity,
+} from './controllableAirEntity.js';
+import {
+  CONTROLLABLE_AIR_PROFILE_IDS,
+  getControllableAirProfile,
+} from '../data/controllableAirProfiles.js';
+import { getManualControlSnapshot, useManualControlStore } from './manualControlStore.js';
 
 export { getBearing, getDistanceKm } from './geo.js';
 
@@ -110,12 +147,19 @@ export function generateRadarBeam(lat, lng, radiusKm, currentAngle) {
   return [[lng, lat], [lon2 * 180 / Math.PI, lat2 * 180 / Math.PI]];
 }
 
-export const SYSTEM_CATALOG = {
-  SHORT:  { type: 'IRIS-T SLM', radarRangeKm: 40,  missilesLeft: 4,  interceptorSpecId: 'INT-SHORT-V1',  scanRateSec: 2.25, radarBeamWidthDeg: 7, radarSector: 360, scanType: RADAR_SCAN_TYPE.MECHANICAL_ROTATION },
-  MEDIUM: { type: 'NASAMS',     radarRangeKm: 80,  missilesLeft: 6,  interceptorSpecId: 'INT-MEDIUM-V1', scanRateSec: 2.0, radarBeamWidthDeg: 6, radarSector: 360, scanType: RADAR_SCAN_TYPE.MECHANICAL_ROTATION },
-  LONG:   { type: 'PATRIOT',    radarRangeKm: 150, missilesLeft: 16, interceptorSpecId: 'INT-LONG-V1',   scanRateSec: 0.1, radarBeamWidthDeg: 5, radarSector: 120, scanType: RADAR_SCAN_TYPE.ELECTRONIC_SECTOR },
-  GUN:    { type: 'Gepard 1A2', weaponType: WEAPON_SYSTEM_TYPE.GUN_AA, gunSpecId: 'GEPARD_1A2', radarRangeKm: 12, engagementRangeKm: 5, missilesLeft: 640, interceptorSpecId: null, scanRateSec: 1, radarBeamWidthDeg: 12, radarSector: 360, scanType: RADAR_SCAN_TYPE.MECHANICAL_ROTATION, deploymentStyle: 'SINGLE_UNIT' },
-};
+export const SYSTEM_CATALOG = Object.freeze({
+  SHORT: Object.freeze({ type: 'IRIS-T SLM', displayName: 'IRIS-T SLM', weaponType: WEAPON_SYSTEM_TYPE.MISSILE, gunSpecId: null, radarRangeKm: 40, missilesLeft: 4, interceptorSpecId: 'INT-SHORT-V1', scanRateSec: 2.25, radarBeamWidthDeg: 7, radarSector: 360, scanType: RADAR_SCAN_TYPE.MECHANICAL_ROTATION }),
+  MEDIUM: Object.freeze({ type: 'NASAMS', displayName: 'NASAMS', weaponType: WEAPON_SYSTEM_TYPE.MISSILE, gunSpecId: null, radarRangeKm: 80, missilesLeft: 6, interceptorSpecId: 'INT-MEDIUM-V1', scanRateSec: 2.0, radarBeamWidthDeg: 6, radarSector: 360, scanType: RADAR_SCAN_TYPE.MECHANICAL_ROTATION }),
+  LONG: Object.freeze({ type: 'PATRIOT', displayName: 'Patriot', weaponType: WEAPON_SYSTEM_TYPE.MISSILE, gunSpecId: null, radarRangeKm: 150, missilesLeft: 16, interceptorSpecId: 'INT-LONG-V1', scanRateSec: 0.1, radarBeamWidthDeg: 5, radarSector: 120, scanType: RADAR_SCAN_TYPE.ELECTRONIC_SECTOR }),
+  GUN: Object.freeze({ type: 'Gepard 1A2', displayName: 'Gepard 1A2', weaponType: WEAPON_SYSTEM_TYPE.GUN_AA, gunSpecId: 'GEPARD_1A2', radarRangeKm: 12, engagementRangeKm: 5, missilesLeft: 640, interceptorSpecId: null, scanRateSec: 1, radarBeamWidthDeg: 12, radarSector: 360, scanType: RADAR_SCAN_TYPE.MECHANICAL_ROTATION, deploymentStyle: 'SINGLE_UNIT' }),
+  SAMP_T: Object.freeze({ type: 'SAMP/T', displayName: 'SAMP/T', weaponType: WEAPON_SYSTEM_TYPE.MISSILE, gunSpecId: null, radarType: 'SEARCH_ENGAGEMENT', radarBand: 'X_BAND_3CM', radarRangeKm: 80, radarElevationCoverageDeg: 95, radarTrackCapacity: 136, iffEnabled: true, missilesLeft: 8, interceptorSpecId: 'INT-ASTER30-V1', scanRateSec: 1, radarBeamWidthDeg: 6, radarSector: 360, scanType: RADAR_SCAN_TYPE.MECHANICAL_ROTATION }),
+  GAZ: Object.freeze({ type: 'Humvee MBG', displayName: 'Humvee MBG', weaponType: WEAPON_SYSTEM_TYPE.GUN_AA, gunSpecId: 'GAZ_DSHK', radarRangeKm: 4, engagementRangeKm: 1.5, missilesLeft: 150, fpvInventory: getControllableAirProfile(CONTROLLABLE_AIR_PROFILE_IDS.SKYFALL_FPV).defaultInventory, interceptorSpecId: null, scanRateSec: 1.5, radarBeamWidthDeg: 18, radarSector: 360, scanType: RADAR_SCAN_TYPE.MECHANICAL_ROTATION, deploymentStyle: 'SINGLE_UNIT' }),
+});
+
+export const DEPLOYABLE_SYSTEM_IDS = Object.freeze([
+  'LONG', 'MEDIUM', 'SHORT', 'SAMP_T', 'GUN', 'GAZ',
+]);
+export { SEARCH_RADAR_PROFILE_IDS };
 
 export const LAUNCHER_VISUAL_STATE = Object.freeze({
   READY: 'READY',
@@ -133,17 +177,50 @@ const DEFAULT_LAUNCH_IGNITION_TIME_SEC = 0.55;
 const DIRECT_IMPACT_VISUAL_DURATION_SEC = 0.12;
 export const BATTERY_RELOAD_TIME_SEC = 30;
 const AUTO_DECISION_INTERVAL_SEC = 0.5;
+const getAutoDecisionIntervalSec = timeScale => (
+  AUTO_DECISION_INTERVAL_SEC * Math.max(1, timeScale)
+);
+const normalizeHeadingDelta = degrees => ((degrees + 540) % 360) - 180;
+const interpolateHeading = (from, to, progress) => (
+  from + normalizeHeadingDelta(to - from) * Math.max(0, Math.min(1, progress)) + 360
+) % 360;
 export const PHYSICS_UPDATE_HZ = 20;
 export const VISUAL_UPDATE_HZ = 30;
+export const SENSOR_MODE = Object.freeze({
+  IDEAL: 'IDEAL',
+  REALISTIC: 'REALISTIC',
+});
 export const getAdaptiveVisualUpdateHz = activeObjectCount => (
   activeObjectCount >= 80 ? 15 : activeObjectCount >= 35 ? 20 : activeObjectCount >= 20 ? 24 : 30
 );
 export const getPhysicsSubstepCount = timeScale => (
-  timeScale >= 20 ? 3 : 1
+  Math.max(1, Math.ceil(timeScale))
 );
 const getHeadingChangeDeg = (fromHeading, toHeading) => Math.abs(
   ((toHeading - fromHeading + 540) % 360) - 180,
 );
+const getDirectionChangeDeg = (fromHeading, toHeading, fromPitch = 0, toPitch = 0) => (
+  Math.hypot(
+    getHeadingChangeDeg(fromHeading, toHeading) * Math.cos(fromPitch * Math.PI / 180),
+    toPitch - fromPitch,
+  )
+);
+const createInterceptorVelocity = (speedKmh, heading, flightPathAngleDeg = 0) => {
+  const speedMps = speedKmh / 3.6;
+  const headingRad = heading * Math.PI / 180;
+  const pitchRad = flightPathAngleDeg * Math.PI / 180;
+  const horizontalSpeedMps = speedMps * Math.cos(pitchRad);
+  return {
+    speedKmh,
+    heading,
+    flightPathAngleDeg,
+    horizontalSpeedMps,
+    verticalSpeedMps: speedMps * Math.sin(pitchRad),
+    eastMps: Math.sin(headingRad) * horizontalSpeedMps,
+    northMps: Math.cos(headingRad) * horizontalSpeedMps,
+    upMps: speedMps * Math.sin(pitchRad),
+  };
+};
 
 const createVinnytsiaPatriotBattery = (controlMode) => {
   const template = SYSTEM_CATALOG.LONG;
@@ -155,17 +232,20 @@ const createVinnytsiaPatriotBattery = (controlMode) => {
     lng,
     altitudeM: 0,
     position: { lat, lng, lon: lng },
+    worldPosition: createWorldPosition(lat, lng, 0),
     velocity: { speedKmh: 0, heading: radarHeading },
     operational: true,
     ready: true,
     heading: radarHeading,
     launchState: LAUNCHER_VISUAL_STATE.READY,
     cooldownRemainingSec: 0,
+    nextLaunchPointIndex: 0,
   });
   return {
     id: 'PATRIOT-01',
     category: 'LONG',
     type: template.type,
+    displayName: template.displayName,
     status: 'ACTIVE',
     missilesLeft: template.missilesLeft,
     ammoCapacity: template.missilesLeft,
@@ -195,6 +275,7 @@ const createVinnytsiaPatriotBattery = (controlMode) => {
         id: 'PATRIOT-01-RADAR',
         altitudeM: 0,
         position: { ...radar, lon: radar.lng },
+        worldPosition: createWorldPosition(radar.lat, radar.lng, 0),
         velocity: { speedKmh: 0, heading: radarHeading },
         heading: radarHeading,
         operational: true,
@@ -226,13 +307,17 @@ export const INTERCEPTOR_LIFECYCLE_STATE = Object.freeze({
 const createVisualSnapshot = state => ({
   simulationTime: state.simulationTime,
   batteries: state.batteries,
+  searchRadars: state.searchRadars,
   airTargets: state.airTargets,
+  controllableAirEntities: state.controllableAirEntities,
   tracks: state.tracks,
   sensorContacts: state.sensorContacts,
   missiles: state.missiles,
   pendingLaunches: state.pendingLaunches,
   gunTracers: state.gunTracers,
   events: state.events,
+  engagementAssignments: state.engagementAssignments,
+  coordinatorMetrics: state.coordinatorMetrics,
   activeScenario: state.activeScenario,
 });
 
@@ -241,13 +326,17 @@ const hasVisualSnapshotChanges = state => {
   return !snapshot
     || snapshot.simulationTime !== state.simulationTime
     || snapshot.batteries !== state.batteries
+    || snapshot.searchRadars !== state.searchRadars
     || snapshot.airTargets !== state.airTargets
+    || snapshot.controllableAirEntities !== state.controllableAirEntities
     || snapshot.tracks !== state.tracks
     || snapshot.sensorContacts !== state.sensorContacts
     || snapshot.missiles !== state.missiles
     || snapshot.pendingLaunches !== state.pendingLaunches
     || snapshot.gunTracers !== state.gunTracers
     || snapshot.events !== state.events
+    || snapshot.engagementAssignments !== state.engagementAssignments
+    || snapshot.coordinatorMetrics !== state.coordinatorMetrics
     || snapshot.activeScenario !== state.activeScenario;
 };
 
@@ -255,8 +344,12 @@ const getQueuedCountForBattery = (launchQueue, batteryId) => (
   launchQueue.filter(item => item.sourceBatteryId === batteryId).length
 );
 
-const selectLauncherForQueue = (battery, track, launchQueue, pendingLaunches) => {
+const selectLauncherForQueue = (battery, track, launchQueue, pendingLaunches, preferredLauncherId = null) => {
   const operationalLaunchers = getOperationalLaunchers(battery);
+  const preferredLauncher = preferredLauncherId
+    ? operationalLaunchers.find(launcher => launcher.id === preferredLauncherId)
+    : null;
+  if (preferredLauncher) return preferredLauncher;
   return operationalLaunchers
     .map(launcher => {
       const queuedLoad = launchQueue.filter(item => (
@@ -288,8 +381,16 @@ const createLaunchQueueItem = ({
   target,
   requestedBy,
   simulationTime,
+  preferredLauncherId = null,
 }) => {
-  const launcher = selectLauncherForQueue(battery, track, state.launchQueue, state.pendingLaunches);
+  if (!isInterceptorCompatible(battery, battery.interceptorSpecId)) return null;
+  const launcher = selectLauncherForQueue(
+    battery,
+    track,
+    state.launchQueue,
+    state.pendingLaunches,
+    preferredLauncherId,
+  );
   if (!launcher) return null;
   const interceptorSpec = getInterceptorSpec(battery.interceptorSpecId);
   const interceptSolution = evaluateInterceptFeasibility({
@@ -316,7 +417,14 @@ const createLaunchQueueItem = ({
 
 const createLaunchedInterceptor = (pendingLaunch, track, simulationTime) => {
   const interceptorSpec = getInterceptorSpec(pendingLaunch.interceptorSpecId);
-  const launchSpeedKmh = interceptorSpec.gameplayPhysics.launchSpeedKmh;
+  const seekerProfile = getInterceptorSeekerProfile(pendingLaunch.interceptorSpecId);
+  const launchProfile = pendingLaunch.launchProfile ?? getLaunchProfile(pendingLaunch.interceptorSpecId);
+  const launchSpeedKmh = launchProfile.initialLaunchSpeedMps * 3.6;
+  const worldPosition = createWorldPosition(
+    pendingLaunch.lat,
+    pendingLaunch.lng,
+    pendingLaunch.altitudeM,
+  );
   return {
     id: pendingLaunch.missileId,
     targetId: pendingLaunch.targetId,
@@ -324,11 +432,17 @@ const createLaunchedInterceptor = (pendingLaunch, track, simulationTime) => {
     sourceBatteryId: pendingLaunch.sourceBatteryId,
     launcherId: pendingLaunch.launcherId,
     interceptorSpecId: pendingLaunch.interceptorSpecId,
+    seekerProfileId: seekerProfile.id,
+    seeker: createMissileSeeker(seekerProfile.id, simulationTime),
     lat: pendingLaunch.lat,
     lng: pendingLaunch.lng,
     position: { lat: pendingLaunch.lat, lng: pendingLaunch.lng, lon: pendingLaunch.lng },
+    worldPosition,
     altitudeM: pendingLaunch.altitudeM,
-    verticalSpeedMps: 0,
+    verticalSpeedMps: launchProfile.launchMode === LAUNCH_MODE.VERTICAL
+      ? launchProfile.initialLaunchSpeedMps
+      : 0,
+    flightPathAngleDeg: launchProfile.launchMode === LAUNCH_MODE.VERTICAL ? 90 : 0,
     heading: pendingLaunch.heading,
     speedKmh: launchSpeedKmh,
     phase: INTERCEPTOR_PHASE.POWERED,
@@ -356,10 +470,44 @@ const createLaunchedInterceptor = (pendingLaunch, track, simulationTime) => {
     turnRateDegPerSec: 0,
     distanceToTargetKm: Number.POSITIVE_INFINITY,
     fuseRadiusM: interceptorSpec.gameplayPhysics.proximityFuseRadiusM,
+    hitRadiusM: Math.min(
+      interceptorSpec.gameplayPhysics.proximityFuseRadiusM,
+      interceptorSpec.gameplayPhysics.minimumVisualContactDistanceM
+        ?? interceptorSpec.gameplayPhysics.proximityFuseRadiusM,
+    ),
     trajectory: [{ lat: pendingLaunch.lat, lng: pendingLaunch.lng, altitudeM: pendingLaunch.altitudeM }],
-    velocity: { speedKmh: launchSpeedKmh, heading: pendingLaunch.heading },
+    velocity: createInterceptorVelocity(
+      launchSpeedKmh,
+      pendingLaunch.heading,
+      launchProfile.launchMode === LAUNCH_MODE.VERTICAL ? 90 : 0,
+    ),
     collisionGroup: 'FRIENDLY_INTERCEPTOR',
     collidesWith: ['HOSTILE_AIR_TARGET'],
+    launchMode: launchProfile.launchMode,
+    launchProfileId: launchProfile.id,
+    launchPointId: pendingLaunch.launchPoint.id,
+    launchPoint: { ...pendingLaunch.launchPoint },
+    launchProfile,
+    launchPhase: INTERCEPTOR_LAUNCH_PHASE.LAUNCH_EXIT,
+    launchWorldPosition: { ...worldPosition },
+    pitchOverHeading: pendingLaunch.pitchOverHeading,
+    pitchOverFlightPathAngleDeg: pendingLaunch.pitchOverFlightPathAngleDeg,
+    initialLaunchHeading: pendingLaunch.heading,
+    initialLaunchAccelerationMps2: launchProfile.initialLaunchAccelerationMps2,
+    initialAccelerationDurationSec: launchProfile.initialAccelerationDurationSec,
+    guidanceEnableDelaySec: Math.max(
+      launchProfile.guidanceEnableDelaySec,
+      launchProfile.initialTurnDelaySec ?? 0,
+    ),
+    guidanceEnabled: false,
+    visualDepartureDurationSec: launchProfile.visualDepartureDurationSec,
+    verticalDepartureDurationSec: launchProfile.verticalDepartureDurationSec,
+    verticalDepartureVisualDistance: launchProfile.verticalDepartureVisualDistance,
+    spriteRotationOffsetDeg: launchProfile.spriteRotationOffsetDeg,
+    mirrorX: launchProfile.mirrorX,
+    mirrorY: launchProfile.mirrorY,
+    visualScale: launchProfile.visualScale,
+    launchVisualRotationDeg: pendingLaunch.launchVisualRotationDeg,
   };
 };
 
@@ -367,21 +515,35 @@ export const useEngine = create((set, get) => ({
   simulationTime: TEST_RAID_SCENARIO.startTimeSeconds,
   simulationProfile: { physicsLevel: 'BASIC', uiDetail: 'OPERATIONAL' },
   timeScale: 1,              
+  sensorMode: SENSOR_MODE.REALISTIC,
+  seekerEnabled: true,
   hoveredTrackId: null,   
   selectedTrackId: null,  
   selectedMissileId: null,
   selectedBatteryId: null,
+  selectedSearchRadarId: null,
+  selectedControllableEntityId: null,
+  controlledControllableEntityId: null,
   nextBatterySequence: 1,
+  nextSearchRadarSequence: 1,
   nextTrackSequence: 1,
   nextMissileSequence: 1,
   nextEventSequence: 1,
   nextManualTargetSequence: 1,
+  nextControllableSequence: 1,
   nextAutoDecisionTime: TEST_RAID_SCENARIO.startTimeSeconds,
   globalControlMode: BATTERY_CONTROL_MODE.MANUAL,
   autoEngagementAttempts: {},
+  engagementAssignments: {},
+  coordinatorCapabilities: DEFAULT_COORDINATOR_CAPABILITIES,
+  coordinatorMetrics: null,
+  coordinatorEvaluationCursor: 0,
+  coordinatorCandidateCache: {},
   
   batteries: [],
+  searchRadars: [],
   airTargets: [],
+  controllableAirEntities: [],
   tracks: [],
   sensorContacts: [],
   missiles: [],
@@ -396,21 +558,29 @@ export const useEngine = create((set, get) => ({
   visualSnapshot: {
     simulationTime: TEST_RAID_SCENARIO.startTimeSeconds,
     batteries: [],
+    searchRadars: [],
     airTargets: [],
+    controllableAirEntities: [],
     tracks: [],
     sensorContacts: [],
     missiles: [],
     pendingLaunches: [],
     gunTracers: [],
     events: [],
+    engagementAssignments: {},
+    coordinatorMetrics: null,
     activeScenario: TEST_RAID_SCENARIO,
   },
 
-  publishVisualSnapshot: () => set(state => (
-    hasVisualSnapshotChanges(state)
-      ? { visualSnapshot: createVisualSnapshot(state) }
-      : {}
-  )),
+  publishVisualSnapshot: () => {
+    let published = false;
+    set(state => {
+      if (!hasVisualSnapshotChanges(state)) return {};
+      published = true;
+      return { visualSnapshot: createVisualSnapshot(state) };
+    });
+    if (published) recordVisualPublish();
+  },
 
   deployPhase: null, draftBattery: null, buildMenuOpen: false, selectedCategory: null,
   
@@ -419,8 +589,41 @@ export const useEngine = create((set, get) => ({
   closeBuildMenu: () => set({ buildMenuOpen: false, selectedCategory: null }),
 
   startDeploy: (categoryKey) => {
-    const template = SYSTEM_CATALOG[categoryKey];
+    const searchRadarProfile = getSearchRadarProfile(categoryKey);
+    const template = SYSTEM_CATALOG[categoryKey] ?? searchRadarProfile;
+    if (!template) return;
     const state = get();
+    if (searchRadarProfile) {
+      const sequence = state.nextSearchRadarSequence;
+      set({
+        buildMenuOpen: false,
+        selectedCategory: null,
+        deployPhase: 'SEARCH_RADAR',
+        nextSearchRadarSequence: sequence + 1,
+        draftBattery: {
+          id: `${searchRadarProfile.id}-${String(sequence).padStart(2, '0')}`,
+          profileId: searchRadarProfile.id,
+          entityType: SEARCH_RADAR_ENTITY_TYPE,
+          capabilities: { radar: true, weapon: false },
+          displayName: searchRadarProfile.displayName,
+          englishName: searchRadarProfile.englishName,
+          debugName: searchRadarProfile.debugName,
+          status: 'ACTIVE', operational: true,
+          sensorProfileId: searchRadarProfile.sensorProfileId,
+          radarRangeKm: searchRadarProfile.nominalRangeKm,
+          scanRateSec: searchRadarProfile.scanPeriodSec,
+          radarBeamWidthDeg: searchRadarProfile.beamWidthDeg,
+          radarScanType: searchRadarProfile.scanType,
+          radarSector: searchRadarProfile.sectorDeg,
+          radarHeading: 0,
+          scanModeLabel: searchRadarProfile.scanModeLabel,
+          radarDimension: searchRadarProfile.dimension,
+          antennaHeightM: searchRadarProfile.antennaHeightM,
+          components: { radar: null },
+        },
+      });
+      return;
+    }
     const includeCommandPost = state.simulationProfile.physicsLevel === 'ADVANCED';
     set({
       buildMenuOpen: false,
@@ -432,8 +635,10 @@ export const useEngine = create((set, get) => ({
       draftBattery: {
         id: `${template.type.split(' ')[0]}-${state.nextBatterySequence.toString().padStart(2, '0')}`,
         category: categoryKey,
-        type: template.type, status: 'DEPLOYING',
+        type: template.type, displayName: template.displayName, status: 'DEPLOYING',
         missilesLeft: template.missilesLeft, ammoCapacity: template.missilesLeft,
+        fpvInventory: template.fpvInventory ?? 0,
+        fpvCapacity: template.fpvInventory ?? 0,
         weaponType: template.weaponType ?? WEAPON_SYSTEM_TYPE.MISSILE,
         gunSpecId: template.gunSpecId ?? null,
         engagementRangeKm: template.engagementRangeKm ?? null,
@@ -453,6 +658,11 @@ export const useEngine = create((set, get) => ({
         radarBeamWidthDeg: template.radarBeamWidthDeg,
         radarScanType: template.scanType,
         radarSector: template.radarSector, radarHeading: 0, 
+        radarType: template.radarType ?? null,
+        radarBand: template.radarBand ?? null,
+        radarElevationCoverageDeg: template.radarElevationCoverageDeg ?? null,
+        radarTrackCapacity: template.radarTrackCapacity ?? null,
+        iffEnabled: template.iffEnabled ?? false,
         components: { fdc: null, radar: null, launchers: [] }
       }
     });
@@ -466,6 +676,33 @@ export const useEngine = create((set, get) => ({
     }
     const draft = { ...state.draftBattery };
     let nextPhase = state.deployPhase;
+    if (state.deployPhase === 'SEARCH_RADAR') {
+      const radar = {
+        id: `${draft.id}-SENSOR`, lat, lng, altitudeM: 0,
+        position: { lat, lng, lon: lng },
+        worldPosition: createWorldPosition(lat, lng, 0),
+        velocity: { speedKmh: 0, heading: 0 },
+        heading: 0, operational: true,
+        antennaHeightM: draft.antennaHeightM,
+        sensorProfileId: draft.sensorProfileId,
+        scanState: createRadarScanState({
+          sector: draft.radarSector,
+          heading: 0,
+          scanPeriodSec: draft.scanRateSec,
+          beamWidthDeg: draft.radarBeamWidthDeg,
+          scanType: draft.radarScanType,
+        }),
+      };
+      const searchRadar = { ...draft, components: { radar } };
+      set({
+        searchRadars: [...state.searchRadars, searchRadar],
+        deployPhase: null,
+        draftBattery: null,
+        selectedSearchRadarId: searchRadar.id,
+        selectedBatteryId: null,
+      });
+      return;
+    }
     if (state.deployPhase === 'UNIT') {
       const unit = {
         id: `${draft.id}-UNIT-1`,
@@ -473,12 +710,14 @@ export const useEngine = create((set, get) => ({
         lng,
         altitudeM: 0,
         position: { lat, lng, lon: lng },
+        worldPosition: createWorldPosition(lat, lng, 0),
         velocity: { speedKmh: 0, heading: 0 },
         operational: true,
         ready: true,
         heading: 0,
         launchState: LAUNCHER_VISUAL_STATE.READY,
         cooldownRemainingSec: 0,
+        nextLaunchPointIndex: 0,
       };
       draft.components.radar = {
         ...unit,
@@ -499,6 +738,7 @@ export const useEngine = create((set, get) => ({
     if (state.deployPhase === 'FDC') {
       draft.components.fdc = {
         lat, lng, altitudeM: 0, position: { lat, lng, lon: lng },
+        worldPosition: createWorldPosition(lat, lng, 0),
         velocity: { speedKmh: 0, heading: 0 },
       };
       nextPhase = 'RADAR';
@@ -508,8 +748,14 @@ export const useEngine = create((set, get) => ({
         lng,
         altitudeM: 0,
         position: { lat, lng, lon: lng },
+        worldPosition: createWorldPosition(lat, lng, 0),
         velocity: { speedKmh: 0, heading: 0 },
         heading: draft.radarHeading,
+        radarType: draft.radarType,
+        radarBand: draft.radarBand,
+        elevationCoverageDeg: draft.radarElevationCoverageDeg,
+        trackCapacity: draft.radarTrackCapacity,
+        iffEnabled: draft.iffEnabled,
         scanState: createRadarScanState({
           sector: draft.radarSector,
           heading: draft.radarHeading,
@@ -526,12 +772,14 @@ export const useEngine = create((set, get) => ({
         lng,
         altitudeM: 0,
         position: { lat, lng, lon: lng },
+        worldPosition: createWorldPosition(lat, lng, 0),
         velocity: { speedKmh: 0, heading: 0 },
         operational: true,
         ready: true,
         heading: 0,
         launchState: LAUNCHER_VISUAL_STATE.READY,
         cooldownRemainingSec: 0,
+        nextLaunchPointIndex: 0,
       });
       if (draft.components.launchers.length >= 2) {
         draft.status = 'ACTIVE';
@@ -592,6 +840,8 @@ export const useEngine = create((set, get) => ({
       selectedTrackId,
       selectedMissileId: null,
       selectedBatteryId: null,
+      selectedSearchRadarId: null,
+      selectedControllableEntityId: null,
       batteries: selectedTrack ? state.batteries.map(battery => {
         if (battery.weaponType !== WEAPON_SYSTEM_TYPE.GUN_AA) return battery;
         const unit = battery.components.launchers[0];
@@ -616,18 +866,203 @@ export const useEngine = create((set, get) => ({
     };
   }),
   setSelectedMissile: (id) => set(state => {
-    const missile = state.missiles.find(candidate => candidate.id === id);
+    if (id === null) return { selectedMissileId: null };
+    const selectedMissileId = state.selectedMissileId === id ? null : id;
     return {
-      selectedMissileId: state.selectedMissileId === id ? null : id,
-      selectedTrackId: missile?.trackId ?? state.selectedTrackId,
+      selectedMissileId,
+      selectedTrackId: null,
       selectedBatteryId: null,
+      selectedSearchRadarId: null,
+      selectedControllableEntityId: null,
     };
   }),
-  setSelectedBattery: (id) => set({ selectedBatteryId: id }),
-  clearSelection: () => set({ selectedTrackId: null, selectedMissileId: null, selectedBatteryId: null }),
+  setSelectedBattery: (id) => set({
+    selectedBatteryId: id,
+    selectedSearchRadarId: null,
+    selectedControllableEntityId: null,
+  }),
+  setSelectedSearchRadar: (id) => set(state => ({
+    selectedSearchRadarId: state.selectedSearchRadarId === id ? null : id,
+    selectedBatteryId: null,
+    selectedTrackId: null,
+    selectedMissileId: null,
+    selectedControllableEntityId: null,
+  })),
+  toggleSearchRadarOperational: (id) => set(state => {
+    const searchRadars = state.searchRadars.map(radar => radar.id === id ? {
+      ...radar,
+      operational: !radar.operational,
+      status: radar.operational ? 'OFFLINE' : 'ACTIVE',
+      components: {
+        ...radar.components,
+        radar: { ...radar.components.radar, operational: !radar.operational },
+      },
+    } : radar);
+    return {
+      searchRadars,
+      visualSnapshot: {
+        ...state.visualSnapshot,
+        searchRadars,
+      },
+    };
+  }),
+  clearSelection: () => set({ selectedTrackId: null, selectedMissileId: null,
+    selectedBatteryId: null, selectedSearchRadarId: null, selectedControllableEntityId: null }),
   setTimeScale: (scale) => set({ timeScale: scale }),
+  setSensorMode: (sensorMode) => set({
+    sensorMode: sensorMode === SENSOR_MODE.IDEAL ? SENSOR_MODE.IDEAL : SENSOR_MODE.REALISTIC,
+  }),
+  toggleSensorMode: () => set(state => ({
+    sensorMode: state.sensorMode === SENSOR_MODE.IDEAL
+      ? SENSOR_MODE.REALISTIC
+      : SENSOR_MODE.IDEAL,
+  })),
+  setSeekerEnabled: (seekerEnabled) => set({ seekerEnabled: Boolean(seekerEnabled) }),
+  toggleSeekerEnabled: () => set(state => ({ seekerEnabled: !state.seekerEnabled })),
   configureSimulationProfile: (profile) => set({ simulationProfile: { ...profile } }),
+  launchControllableEntity: ({
+    sourceId = null,
+    profileId = CONTROLLABLE_AIR_PROFILE_IDS.TEST_PLACEHOLDER,
+    initialPosition,
+    initialOrientation,
+    selectedTrackId = null,
+  }) => {
+    const state = get();
+    if (!initialPosition || !Number.isFinite(initialPosition.lat)
+      || !Number.isFinite(initialPosition.lng)) return null;
+    const id = `CTRL-${String(state.nextControllableSequence).padStart(3, '0')}`;
+    const entity = createControllableAirEntity({
+      id,
+      profileId,
+      sourceId,
+      initialPosition,
+      initialOrientation,
+      selectedTrackId,
+      simulationTime: state.simulationTime,
+    });
+    set({
+      controllableAirEntities: [...state.controllableAirEntities, entity],
+      nextControllableSequence: state.nextControllableSequence + 1,
+      selectedControllableEntityId: id,
+    });
+    return id;
+  },
+  launchSkyfallFromMwg: (batteryId) => {
+    const state = get();
+    const battery = state.batteries.find(candidate => candidate.id === batteryId);
+    const source = battery?.components?.launchers?.[0];
+    if (!battery || battery.category !== 'GAZ' || !source || (battery.fpvInventory ?? 0) <= 0) {
+      return null;
+    }
+    const profile = getControllableAirProfile(CONTROLLABLE_AIR_PROFILE_IDS.SKYFALL_FPV);
+    const heading = source.heading ?? 0;
+    const spawn = getDestinationPoint(
+      source.lat,
+      source.lng,
+      heading,
+      (profile.launch?.spawnOffsetM ?? 3) / 1000,
+    );
+    const id = state.launchControllableEntity({
+      sourceId: battery.id,
+      profileId: CONTROLLABLE_AIR_PROFILE_IDS.SKYFALL_FPV,
+      initialPosition: {
+        lat: spawn.lat,
+        lng: spawn.lng,
+        altitudeM: profile.launch?.spawnAltitudeM ?? 2,
+      },
+      initialOrientation: { heading, pitch: 90, roll: 0 },
+      selectedTrackId: state.selectedTrackId,
+    });
+    if (!id) return null;
+    set(current => ({
+      batteries: current.batteries.map(candidate => candidate.id === batteryId
+        ? { ...candidate, fpvInventory: Math.max(0, (candidate.fpvInventory ?? 0) - 1) }
+        : candidate),
+      nextEventSequence: current.nextEventSequence + 1,
+      events: [...current.events, createSimulationEvent(
+        current.nextEventSequence,
+        EVENT_TYPE.CONTROLLABLE_LAUNCHED,
+        current.simulationTime,
+        { entityId: id, batteryId, profileId: CONTROLLABLE_AIR_PROFILE_IDS.SKYFALL_FPV },
+      )].slice(-120),
+    }));
+    return id;
+  },
+  spawnControllableTestEntity: () => {
+    const state = get();
+    const anchor = state.batteries[0]?.components?.launchers?.[0]
+      ?? { lat: 50.4501, lng: 30.5234 };
+    return state.launchControllableEntity({
+      profileId: CONTROLLABLE_AIR_PROFILE_IDS.TEST_PLACEHOLDER,
+      initialPosition: { lat: anchor.lat, lng: anchor.lng, altitudeM: 180 },
+      initialOrientation: { heading: 45, pitch: 3, roll: 0, speedMps: 18 },
+      selectedTrackId: state.selectedTrackId,
+    });
+  },
+  setSelectedControllableEntity: id => set(state => ({
+    // Transfer the user's COMMAND track selection before clearing the map selection.
+    controllableAirEntities: state.controllableAirEntities.map(entity => entity.id === id
+      && state.tracks.some(track => track.id === state.selectedTrackId && isAvailableNetworkTrack(track))
+      ? { ...entity, selectedTrackId: state.selectedTrackId } : entity),
+    selectedControllableEntityId: state.controllableAirEntities.some(entity => entity.id === id)
+      ? id
+      : null,
+    selectedTrackId: null,
+    selectedMissileId: null,
+    selectedBatteryId: null,
+    selectedSearchRadarId: null,
+  })),
+  setControlledControllableEntity: id => {
+    const state = get();
+    const entity = state.controllableAirEntities.find(candidate => candidate.id === id
+      && candidate.status === CONTROLLABLE_STATUS.ACTIVE);
+    useManualControlStore.getState().release();
+    if (!entity) {
+      set({ controlledControllableEntityId: null });
+      return false;
+    }
+    useManualControlStore.getState().claim(id);
+    set({ controlledControllableEntityId: id, selectedControllableEntityId: id });
+    return true;
+  },
+  releaseControllableControl: () => {
+    useManualControlStore.getState().release();
+    set({ controlledControllableEntityId: null });
+  },
+  setControllableCameraMode: (id, cameraMode) => set(state => ({
+    controllableAirEntities: state.controllableAirEntities.map(entity => entity.id === id
+      ? { ...entity, cameraMode: Object.values(CONTROLLABLE_CAMERA_MODE).includes(cameraMode)
+        ? cameraMode
+        : entity.cameraMode }
+      : entity),
+  })),
+  setControllableSelectedTrack: (id, trackId) => set(state => ({
+    controllableAirEntities: state.controllableAirEntities.map(entity => entity.id === id
+      ? {
+        ...entity,
+        selectedTrackId: trackId && state.tracks.some(track => track.id === trackId && isAvailableNetworkTrack(track))
+          ? trackId
+          : null,
+      }
+      : entity),
+  })),
+  destroyControllableEntity: id => {
+    const state = get();
+    if (!state.controllableAirEntities.some(entity => entity.id === id)) return false;
+    if (state.controlledControllableEntityId === id) {
+      useManualControlStore.getState().release(id);
+    }
+    set({
+      controllableAirEntities: state.controllableAirEntities.filter(entity => entity.id !== id),
+      controlledControllableEntityId: state.controlledControllableEntityId === id
+        ? null : state.controlledControllableEntityId,
+      selectedControllableEntityId: state.selectedControllableEntityId === id
+        ? null : state.selectedControllableEntityId,
+    });
+    return true;
+  },
   resetScenario: (scenarioMode = 'SIMPLE', scenarioOverride = null) => {
+    useManualControlStore.getState().release();
     const scenarioSeed = Date.now() >>> 0;
     const scenario = scenarioOverride ?? (scenarioMode === 'SANDBOX'
       ? createSandboxScenario(scenarioSeed)
@@ -639,19 +1074,33 @@ export const useEngine = create((set, get) => ({
     const resetState = {
     simulationTime: scenario.startTimeSeconds,
     timeScale: 1,
+    sensorMode: SENSOR_MODE.REALISTIC,
+    seekerEnabled: true,
     selectedTrackId: null,
     selectedMissileId: null,
     selectedBatteryId: null,
+    selectedSearchRadarId: null,
+    selectedControllableEntityId: null,
+    controlledControllableEntityId: null,
     nextBatterySequence: initialBatteries.length + 1,
+    nextSearchRadarSequence: 1,
     nextTrackSequence: 1,
     nextMissileSequence: 1,
     nextEventSequence: 1,
     nextManualTargetSequence: 1,
+    nextControllableSequence: 1,
     nextAutoDecisionTime: scenario.startTimeSeconds,
     globalControlMode: initialControlMode,
     autoEngagementAttempts: {},
+    engagementAssignments: {},
+    coordinatorCapabilities: DEFAULT_COORDINATOR_CAPABILITIES,
+    coordinatorMetrics: null,
+    coordinatorEvaluationCursor: 0,
+    coordinatorCandidateCache: {},
     batteries: initialBatteries,
+    searchRadars: [],
     airTargets: [],
+    controllableAirEntities: [],
     tracks: [],
     sensorContacts: [],
     missiles: [],
@@ -787,7 +1236,8 @@ export const useEngine = create((set, get) => ({
   queueEngagement: (batteryId, trackId, requestedBy = BATTERY_CONTROL_MODE.MANUAL) => {
     const state = get();
     const track = state.tracks.find(candidate => candidate.id === trackId);
-    const target = state.airTargets.find(candidate => candidate.id === track?.targetId);
+    const targetMetadata = state.airTargets.find(candidate => candidate.id === track?.targetId);
+    const target = createFireControlTargetEstimate(track, targetMetadata, state.simulationTime);
     const selectedBattery = state.batteries.find(candidate => candidate.id === batteryId);
     if (!track || !target || !selectedBattery) return;
     if (selectedBattery.controlMode === BATTERY_CONTROL_MODE.HOLD) return;
@@ -834,6 +1284,11 @@ export const useEngine = create((set, get) => ({
     if (getOperationalLaunchers(selectedBattery).length === 0) return;
     if (selectedBattery.missilesLeft - getQueuedCountForBattery(state.launchQueue, batteryId) <= 0) return;
     const registry = buildEngagementRegistry(state);
+    if (
+      requestedBy === BATTERY_CONTROL_MODE.ASSIST
+      && state.coordinatorCapabilities.coordinatedEngagements
+      && (registry.get(trackId)?.total ?? 0) > 0
+    ) return;
     const engagementPolicy = getInterceptorEngagementPolicy(selectedBattery);
     if ((registry.get(trackId)?.missileTotal ?? 0) >= engagementPolicy.maximumActiveInterceptors) {
       return;
@@ -892,8 +1347,16 @@ export const useEngine = create((set, get) => ({
     );
   },
 
-  tick: (substepDivisor = 1) => set((state) => {
+  tick: (substepDivisor = 1) => {
+    const updateStartedAt = globalThis.performance?.now?.() ?? Date.now();
+    let updated = false;
+    let updateCalculationMs = 0;
+    set((state) => {
     if (state.timeScale === 0) return {};
+    updated = true;
+    beginSimulationUpdateProfile();
+    const calculationStartedAt = globalThis.performance?.now?.() ?? Date.now();
+    const checkpoint = createSimulationStageTimer();
     const deltaTimeSec = (1 / PHYSICS_UPDATE_HZ) * state.timeScale
       / Math.max(1, substepDivisor);
     
@@ -934,13 +1397,60 @@ export const useEngine = create((set, get) => ({
         },
       };
     });
+    const updatedSearchRadars = state.searchRadars.map(searchRadar => {
+      const radar = searchRadar.components.radar;
+      return {
+        ...searchRadar,
+        components: {
+          ...searchRadar.components,
+          radar: radar ? {
+            ...radar,
+            scanState: advanceRadarScan(
+              radar.scanState,
+              deltaTimeSec,
+              searchRadar.radarSector,
+              searchRadar.radarHeading,
+            ),
+          } : null,
+        },
+      };
+    });
+    checkpoint(SIMULATION_SUBSYSTEM.RADAR);
 
     const nextSimulationTime = state.simulationTime + deltaTimeSec;
+    let updatedControllableAirEntities = state.controllableAirEntities.map(entity => (
+      advanceControllableAirEntity(
+        entity,
+        deltaTimeSec,
+        entity.id === state.controlledControllableEntityId
+          ? getManualControlSnapshot(entity.id)
+          : undefined,
+      )
+    ));
+    const controlledControllableStillActive = updatedControllableAirEntities.some(
+      entity => entity.id === state.controlledControllableEntityId
+        && entity.status === CONTROLLABLE_STATUS.ACTIVE,
+    );
     let nextEventSequence = state.nextEventSequence;
     let events = [...state.events];
     const emitEvent = (type, details) => {
       events.push(createSimulationEvent(nextEventSequence++, type, nextSimulationTime, details));
     };
+
+    updatedControllableAirEntities = updatedControllableAirEntities.map(entity => {
+      const previous = state.controllableAirEntities.find(candidate => candidate.id === entity.id);
+      if (previous && previous.status !== CONTROLLABLE_STATUS.CRASHED
+        && entity.status === CONTROLLABLE_STATUS.CRASHED) {
+        emitEvent(EVENT_TYPE.CONTROLLABLE_CRASHED, {
+          entityId: entity.id,
+          batteryId: entity.launchSourceId,
+          position: { ...entity.position },
+          altitudeM: 0,
+        });
+        return { ...entity, terminalAt: nextSimulationTime };
+      }
+      return entity;
+    });
 
     const newlyLaunchedMissiles = [];
     const nextPendingLaunches = [];
@@ -953,11 +1463,24 @@ export const useEngine = create((set, get) => ({
         ?? DEFAULT_LAUNCH_IGNITION_TIME_SEC;
       const launchReadyAt = rotationDurationSec + ignitionDurationSec;
       if (elapsedSec < launchReadyAt) {
-        const phase = elapsedSec < rotationDurationSec
+        const ignitionVisualLeadSec = Math.min(0.2, ignitionDurationSec);
+        const rotationComplete = elapsedSec >= rotationDurationSec;
+        const phase = !rotationComplete
           ? LAUNCHER_VISUAL_STATE.ROTATING
-          : LAUNCHER_VISUAL_STATE.LAUNCHING;
+          : (elapsedSec >= launchReadyAt - ignitionVisualLeadSec
+            ? LAUNCHER_VISUAL_STATE.LAUNCHING
+            : LAUNCHER_VISUAL_STATE.TRACKING);
+        const visualHeading = interpolateHeading(
+          pendingLaunch.launcherStartHeading ?? pendingLaunch.launcherHeading,
+          pendingLaunch.launcherHeading,
+          rotationDurationSec > 0 ? elapsedSec / rotationDurationSec : 1,
+        );
         nextPendingLaunches.push({ ...pendingLaunch, elapsedSec, phase });
-        launcherStates.set(pendingLaunch.launcherId, { state: phase, ready: false });
+        launcherStates.set(pendingLaunch.launcherId, {
+          state: phase,
+          ready: false,
+          heading: visualHeading,
+        });
         return;
       }
 
@@ -983,6 +1506,7 @@ export const useEngine = create((set, get) => ({
       launcherStates.set(pendingLaunch.launcherId, {
         state: LAUNCHER_VISUAL_STATE.COOLDOWN,
         ready: false,
+        heading: pendingLaunch.launcherHeading,
         cooldownRemainingSec: launchIntervalSec,
       });
     });
@@ -999,6 +1523,11 @@ export const useEngine = create((set, get) => ({
                 ...launcher,
                 launchState: visualState.state,
                 ready: visualState.ready,
+                heading: visualState.heading ?? launcher.heading,
+                velocity: {
+                  ...launcher.velocity,
+                  heading: visualState.heading ?? launcher.velocity?.heading ?? launcher.heading,
+                },
                 cooldownRemainingSec: visualState.cooldownRemainingSec ?? launcher.cooldownRemainingSec,
               }
               : launcher;
@@ -1021,12 +1550,22 @@ export const useEngine = create((set, get) => ({
         });
         return;
       }
+      if (!isInterceptorCompatible(battery, queueItem.interceptorSpecId)) {
+        emitEvent(EVENT_TYPE.ENGAGEMENT_CANCELLED, {
+          batteryId: queueItem.sourceBatteryId,
+          trackId: queueItem.trackId,
+          reason: 'INCOMPATIBLE_INTERCEPTOR',
+        });
+        return;
+      }
       if (!launcher.ready || battery.missilesLeft <= 0 || battery.reloadRemainingSec) {
         launchQueue.push(queueItem);
         return;
       }
 
-      const target = state.airTargets.find(candidate => candidate.id === queueItem.targetId);
+      const targetMetadata = state.airTargets.find(candidate => candidate.id === queueItem.targetId);
+      const target = createFireControlTargetEstimate(track, targetMetadata, state.simulationTime);
+      if (!target) return;
       const interceptorSpec = getInterceptorSpec(queueItem.interceptorSpecId);
       const interceptSolution = evaluateInterceptFeasibility({
         launcher,
@@ -1043,39 +1582,79 @@ export const useEngine = create((set, get) => ({
         return;
       }
 
-      const verticalLaunch = interceptorSpec.gameplayPhysics.launchMode === 'VERTICAL';
-      const launchHeading = verticalLaunch
-        ? interceptSolution.interceptBearingDeg ?? getBearing(
-          launcher.lat,
-          launcher.lng,
-          track.reportedPosition.lat,
-          track.reportedPosition.lng,
-        )
-        : interceptSolution.interceptBearingDeg ?? getBearing(
-          launcher.lat,
-          launcher.lng,
-          track.reportedPosition.lat,
-          track.reportedPosition.lng,
+      const launchProfile = getLaunchProfile(queueItem.interceptorSpecId);
+      const interceptorPhysics = interceptorSpec.gameplayPhysics;
+      const launchPointIndex = 0;
+      const launchPoint = launchProfile.launchPoints[0];
+      const interceptBearing = interceptSolution.interceptBearingDeg ?? getBearing(
+        launcher.lat,
+        launcher.lng,
+        track.reportedPosition.lat,
+        track.reportedPosition.lng,
+      );
+      const predictedInterceptPoint = interceptSolution.predictedInterceptPoint
+        ?? track.reportedPosition;
+      const predictedInterceptAltitudeM = predictedInterceptPoint.altitudeM
+        ?? predictedInterceptPoint.alt
+        ?? track.reportedPosition.altitudeM
+        ?? track.reportedPosition.alt
+        ?? 0;
+      const predictedHorizontalDistanceM = getDistanceKm(
+        launcher.lat,
+        launcher.lng,
+        predictedInterceptPoint.lat,
+        predictedInterceptPoint.lng,
+      ) * 1000;
+      const pitchOverFlightPathAngleDeg = Math.atan2(
+        predictedInterceptAltitudeM - (launcher.altitudeM ?? 0),
+        Math.max(predictedHorizontalDistanceM, 1),
+      ) * 180 / Math.PI;
+      const launchDirectionWorldOffsetDeg = (
+        launchProfile.launcherSpriteRotationOffsetDeg
+        + launchPoint.launchDirectionOffsetDeg
+      );
+      const launcherStartHeading = launcher.heading ?? 0;
+      const launcherHeading = launchProfile.launchMode === LAUNCH_MODE.VERTICAL
+        ? launcher.heading ?? 0
+        : (interceptBearing - launchDirectionWorldOffsetDeg + 360) % 360;
+      const rotationAngleDeg = launchProfile.launchMode === LAUNCH_MODE.VERTICAL
+        ? 0
+        : Math.abs(normalizeHeadingDelta(launcherHeading - launcherStartHeading));
+      const rotationDurationSec = launchProfile.launchMode === LAUNCH_MODE.VERTICAL
+        ? 0
+        : rotationAngleDeg / Math.max(
+          1,
+          interceptorPhysics.launcherRotationRateDegPerSec ?? 45,
         );
-      const launchPosition = verticalLaunch
-        ? { lat: launcher.lat, lng: launcher.lng }
-        : getDestinationPoint(
-          launcher.lat,
-          launcher.lng,
-          launchHeading,
-          interceptorSpec.gameplayPhysics.launchOriginOffsetM / 1000,
-        );
+      const launcherWorldPosition = getWorldPosition(launcher);
+      const launchHeading = ((
+        launchProfile.launchMode === LAUNCH_MODE.VERTICAL
+          ? interceptBearing
+          : launcherHeading + launchDirectionWorldOffsetDeg
+      ) + 360) % 360;
       nextPendingLaunches.push({
         ...queueItem,
         id: `PREP-${queueItem.missileId}`,
-        lat: launchPosition.lat,
-        lng: launchPosition.lng,
-        altitudeM: launcher.altitudeM ?? 0,
+        lat: launcherWorldPosition.lat,
+        lng: launcherWorldPosition.lng,
+        altitudeM: launcherWorldPosition.altitudeM,
+        worldPosition: { ...launcherWorldPosition },
         heading: launchHeading,
+        pitchOverHeading: interceptBearing,
+        pitchOverFlightPathAngleDeg,
+        launcherHeading,
+        launcherStartHeading,
+        launchPoint,
+        launchPointIndex,
+        launchProfile,
+        launchVisualRotationDeg: launcherHeading + launchProfile.launcherSpriteRotationOffsetDeg,
         interceptSolution,
-        rotationDurationSec: verticalLaunch ? 0 : interceptSolution.rotationDelaySec,
-        ignitionDurationSec: interceptorSpec.gameplayPhysics.launchPreparationSec,
-        phase: verticalLaunch ? LAUNCHER_VISUAL_STATE.LAUNCHING : LAUNCHER_VISUAL_STATE.ROTATING,
+        rotationDurationSec,
+        ignitionDurationSec: launchProfile.preLaunchDelaySec,
+        phase: rotationDurationSec > 0.01
+          ? LAUNCHER_VISUAL_STATE.ROTATING
+          : LAUNCHER_VISUAL_STATE.TRACKING,
+        launchPhase: INTERCEPTOR_LAUNCH_PHASE.PRE_LAUNCH,
         elapsedSec: 0,
       });
       updatedBatteries = updatedBatteries.map(candidate => {
@@ -1091,13 +1670,14 @@ export const useEngine = create((set, get) => ({
               if (candidateLauncher.id === launcher.id) return {
                 ...candidateLauncher,
                 ready: false,
-                heading: verticalLaunch ? candidateLauncher.heading : launchHeading,
-                launchState: verticalLaunch
-                  ? LAUNCHER_VISUAL_STATE.LAUNCHING
-                  : LAUNCHER_VISUAL_STATE.ROTATING,
+                heading: launcherStartHeading,
+                nextLaunchPointIndex: 0,
+                launchState: rotationDurationSec > 0.01
+                  ? LAUNCHER_VISUAL_STATE.ROTATING
+                  : LAUNCHER_VISUAL_STATE.TRACKING,
                 velocity: {
                   ...candidateLauncher.velocity,
-                  heading: verticalLaunch ? candidateLauncher.heading : launchHeading,
+                  heading: launcherStartHeading,
                 },
               };
               return missilesLeft === 0
@@ -1135,6 +1715,7 @@ export const useEngine = create((set, get) => ({
         },
       };
     });
+    checkpoint(SIMULATION_SUBSYSTEM.ENGAGEMENT);
 
     const spawnedTargetIds = new Set(state.spawnedTargetIds);
     const announcedGroupIds = new Set(state.announcedGroupIds);
@@ -1162,14 +1743,21 @@ export const useEngine = create((set, get) => ({
         });
       }
     });
+    checkpoint(SIMULATION_SUBSYSTEM.SCENARIO);
 
     const previousTargetsById = new Map(targetsWithSpawns.map(target => [target.id, target]));
     const advancedTargets = targetsWithSpawns.map(target => advanceAirTarget(target, deltaTimeSec));
     advancedTargets
       .filter(target => target.state === 'COMPLETED')
-      .forEach(target => emitEvent(EVENT_TYPE.TARGET_ESCAPED, { targetId: target.id }));
+      .forEach(target => emitEvent(EVENT_TYPE.TARGET_ESCAPED, {
+        targetId: target.id,
+        impactPoint: target.ballisticPhysics?.impactPoint ?? null,
+        impactErrorMeters: target.ballisticPhysics?.impactErrorMeters ?? null,
+        ballisticMiss: target.ballisticPhysics?.ballisticMiss ?? false,
+      }));
     const updatedTargets = advancedTargets.filter(target => target.state === 'ALIVE');
     const updatedTargetsById = new Map(updatedTargets.map(target => [target.id, target]));
+    checkpoint(SIMULATION_SUBSYSTEM.TARGET_KINEMATICS);
 
     let nextTrackSequence = state.nextTrackSequence;
     const tracksByTargetId = new Map(state.tracks.map(track => [track.targetId, track]));
@@ -1179,20 +1767,33 @@ export const useEngine = create((set, get) => ({
       nextSimulationTime,
       deltaTimeSec,
     );
-    const operationalNetworkRadars = updatedBatteries.filter(isRadarSensorOperational);
+    const operationalNetworkRadars = [...updatedBatteries, ...updatedSearchRadars]
+      .filter(isRadarSensorOperational);
+    const operationalSourceIds = new Set(operationalNetworkRadars.map(radar => radar.id));
     updatedTargets.forEach(target => {
       const existingTrack = tracksByTargetId.get(target.id);
-      const networkScanOpportunity = selectNetworkRadarScanOpportunity(
-        operationalNetworkRadars,
-        target,
-        existingTrack?.sourceBatteryId,
-      );
-      const scanOpportunities = networkScanOpportunity ? [networkScanOpportunity] : [];
+      const scanOpportunities = state.sensorMode === SENSOR_MODE.REALISTIC
+        ? getNetworkRadarScanOpportunities(
+          operationalNetworkRadars,
+          target,
+          getRadarSensorProfile,
+        )
+        : [];
 
       let observation = null;
-      if (scanOpportunities.length > 0) {
+      if (state.sensorMode === SENSOR_MODE.IDEAL) {
+        const trackId = existingTrack ? existingTrack.id : formatTrackId(nextTrackSequence++);
+        observation = applyRadarObservation({
+          existingTrack,
+          target,
+          sourceBatteryId: 'IDEAL-SENSOR',
+          simulationTime: nextSimulationTime,
+          trackId,
+        });
+      } else if (scanOpportunities.length > 0) {
         const scanResult = applySensorScanBatch({
           contacts: sensorContacts,
+          activeSourceIds: operationalSourceIds,
           target,
           scanOpportunities,
           simulationTime: nextSimulationTime,
@@ -1203,15 +1804,31 @@ export const useEngine = create((set, get) => ({
       }
 
       if (observation) {
-        const trackId = existingTrack ? existingTrack.id : formatTrackId(nextTrackSequence++);
-        const observedTrack = applySensorEvidenceObservation({
-          existingTrack,
-          target,
-          observation,
-          simulationTime: nextSimulationTime,
-          trackId,
-        });
+        const trackId = existingTrack
+          ? existingTrack.id
+          : (state.sensorMode === SENSOR_MODE.IDEAL
+            ? observation.id
+            : formatTrackId(nextTrackSequence++));
+        const observedTrack = state.sensorMode === SENSOR_MODE.IDEAL
+          ? observation
+          : applySensorEvidenceObservation({
+            existingTrack,
+            target,
+            observation,
+            simulationTime: nextSimulationTime,
+            trackId,
+          });
         updatedTracks.push(observedTrack);
+        if (existingTrack?.sourceRadarId && observedTrack.sourceRadarId
+          && existingTrack.sourceRadarId !== observedTrack.sourceRadarId) {
+          emitEvent(EVENT_TYPE.TRACK_SOURCE_HANDOFF, {
+            trackId: observedTrack.id,
+            targetId: target.id,
+            fromSensorId: existingTrack.sourceRadarId,
+            toSensorId: observedTrack.sourceRadarId,
+            sourceScore: observedTrack.bestSensorScore,
+          });
+        }
         if (!existingTrack || existingTrack.state === TRACK_STATE.LOST) {
           emitEvent(EVENT_TYPE.TRACK_DETECTED, {
             trackId: observedTrack.id,
@@ -1229,19 +1846,20 @@ export const useEngine = create((set, get) => ({
       }
 
       if (!existingTrack) return;
-      const sourceRadarBattery = operationalNetworkRadars.find(battery => (
-        battery.id === existingTrack.sourceBatteryId
-      ));
-      const hasNetworkCoverage = sourceRadarBattery
-        ? isTargetInRadarCoverage(sourceRadarBattery, target)
-        : operationalNetworkRadars.some(battery => isTargetInRadarCoverage(battery, target));
+      // The last measurement owner is not the entire network. Leaving its
+      // coverage must not erase a still-coasting estimate in another radar's
+      // coverage. This neither refreshes its age nor creates a measurement.
+      const hasNetworkCoverage = operationalNetworkRadars.some(battery => {
+        const geometry = getRadarGeometry(battery, target, getRadarSensorProfile(battery));
+        return geometry.insideNominalCoverage && geometry.hasLineOfSight;
+      });
       if (!hasNetworkCoverage) {
         const lostTrack = updateLostTrack(existingTrack, nextSimulationTime, deltaTimeSec);
         if (lostTrack) updatedTracks.push(lostTrack);
         return;
       }
       if (!isTrackSensorStale(existingTrack, nextSimulationTime)) {
-        updatedTracks.push(existingTrack);
+        updatedTracks.push(coastTrack(existingTrack, nextSimulationTime, deltaTimeSec));
         return;
       }
 
@@ -1249,6 +1867,7 @@ export const useEngine = create((set, get) => ({
       if (lostTrack) updatedTracks.push(lostTrack);
     });
     const updatedTracksById = new Map(updatedTracks.map(track => [track.id, track]));
+    checkpoint(SIMULATION_SUBSYSTEM.TRACK);
 
     let batteriesWithScanFeedback = updatedBatteries;
     let nextGunEngagements = [];
@@ -1259,9 +1878,10 @@ export const useEngine = create((set, get) => ({
     (state.gunEngagements ?? []).forEach(engagement => {
       const battery = batteriesWithScanFeedback.find(candidate => candidate.id === engagement.batteryId);
       const track = updatedTracksById.get(engagement.trackId);
-      const target = updatedTargetsById.get(engagement.targetId);
+      const physicalTarget = updatedTargetsById.get(engagement.targetId);
+      const target = createFireControlTargetEstimate(track, physicalTarget, nextSimulationTime);
       const gunSpec = getGunSystemSpec(battery?.gunSpecId);
-      if (!battery || !track || !target || !gunSpec) return;
+      if (!battery || !track || !target || !physicalTarget || !gunSpec) return;
 
       const unit = battery.components.launchers[0];
       const aimSolution = solveGunAim({ unit, track, target, gunSpec });
@@ -1402,16 +2022,72 @@ export const useEngine = create((set, get) => ({
       ...battery,
       currentSimulationTime: nextSimulationTime,
     }));
+    checkpoint(SIMULATION_SUBSYSTEM.ENGAGEMENT);
 
     const activeMissiles = [];
     const interceptedTargetIds = new Set(gunInterceptedTargetIds);
+    const previousControllablesById = new Map(
+      state.controllableAirEntities.map(entity => [entity.id, entity]),
+    );
+    updatedControllableAirEntities = updatedControllableAirEntities.map(entity => {
+      if (entity.status !== CONTROLLABLE_STATUS.ACTIVE
+        || entity.profileId !== CONTROLLABLE_AIR_PROFILE_IDS.SKYFALL_FPV) return entity;
+      const previous = previousControllablesById.get(entity.id) ?? entity;
+      let visualCollision = null;
+      const collisionTarget = updatedTargets.find(target => {
+        if (interceptedTargetIds.has(target.id)) return false;
+        const previousTarget = previousTargetsById.get(target.id) ?? target;
+        const approach = didSweptPathsEnterRadiusMeters({
+          interceptorStart: getWorldPosition(previous),
+          interceptorEnd: getWorldPosition(entity),
+          targetStart: getWorldPosition(previousTarget),
+          targetEnd: getWorldPosition(target),
+        }, entity.collisionRadiusM);
+        if (approach.intersects) visualCollision = approach;
+        return approach.intersects;
+      });
+      if (!collisionTarget) return entity;
+      interceptedTargetIds.add(collisionTarget.id);
+      emitEvent(EVENT_TYPE.CONTROLLABLE_HIT, {
+        entityId: entity.id,
+        targetId: collisionTarget.id,
+        batteryId: entity.launchSourceId,
+        position: { ...entity.position },
+        altitudeM: entity.altitudeM,
+      });
+      emitEvent(EVENT_TYPE.TARGET_INTERCEPTED, {
+        targetId: collisionTarget.id,
+        missileId: entity.id,
+        batteryId: entity.launchSourceId,
+        weaponType: 'FPV_INTERCEPTOR',
+        position: { ...entity.position },
+        altitudeM: entity.altitudeM,
+        closestApproachM: entity.collisionRadiusM,
+      });
+      return {
+        ...entity,
+        status: CONTROLLABLE_STATUS.DESTROYED,
+        flightPhase: 'POST_EVENT_HOLD',
+        terminalAt: nextSimulationTime,
+        visualImpact: {
+          time: nextSimulationTime - deltaTimeSec * (1 - visualCollision.timeFraction),
+          missilePosition: { ...visualCollision.interceptorPosition },
+          targetPosition: { ...visualCollision.targetPosition },
+          targetId: collisionTarget.id,
+        },
+        lastCollision: { kind: 'AIR_TARGET', targetId: collisionTarget.id, at: nextSimulationTime },
+      };
+    });
     [...state.missiles, ...newlyLaunchedMissiles].forEach(missile => {
       const interceptorSpec = getInterceptorSpec(missile.interceptorSpecId);
       const physics = interceptorSpec.gameplayPhysics;
+      const missileWorldPosition = getWorldPosition(missile);
 
       if (missile.lifecycleState === INTERCEPTOR_LIFECYCLE_STATE.IMPACT) {
         const impactTarget = updatedTargetsById.get(missile.targetId);
-        const impactPosition = impactTarget?.position ?? missile.impactTargetPosition;
+        const impactPosition = impactTarget
+          ? getWorldPosition(impactTarget)
+          : missile.impactTargetPosition;
         const impactAltitudeM = impactTarget?.altitudeM ?? missile.impactTargetAltitudeM;
         const impactElapsedSec = nextSimulationTime - missile.impactStartedAt;
         if (impactElapsedSec < DIRECT_IMPACT_VISUAL_DURATION_SEC) {
@@ -1420,6 +2096,7 @@ export const useEngine = create((set, get) => ({
             lat: impactPosition.lat,
             lng: impactPosition.lng,
             position: { lat: impactPosition.lat, lng: impactPosition.lng, lon: impactPosition.lng },
+            worldPosition: createWorldPosition(impactPosition.lat, impactPosition.lng, impactAltitudeM),
             altitudeM: impactAltitudeM,
             distanceToTargetKm: 0,
           });
@@ -1449,8 +2126,8 @@ export const useEngine = create((set, get) => ({
       if (missile.lifecycleState === INTERCEPTOR_LIFECYCLE_STATE.MISSED) {
         const flight = advanceInterceptorFlight(missile, deltaTimeSec, physics);
         const nextPosition = getDestinationPoint(
-          missile.lat,
-          missile.lng,
+          missileWorldPosition.lat,
+          missileWorldPosition.lng,
           missile.heading,
           flight.travelDistanceKm,
         );
@@ -1466,6 +2143,7 @@ export const useEngine = create((set, get) => ({
             lat: nextPosition.lat,
             lng: nextPosition.lng,
             position: { lat: nextPosition.lat, lng: nextPosition.lng, lon: nextPosition.lng },
+            worldPosition: createWorldPosition(nextPosition.lat, nextPosition.lng, missileWorldPosition.altitudeM),
             lifecycleState: INTERCEPTOR_LIFECYCLE_STATE.SELF_DESTRUCT,
             selfDestructTime: nextSimulationTime,
             selfDestructElapsedSec: 0,
@@ -1477,6 +2155,7 @@ export const useEngine = create((set, get) => ({
             lat: nextPosition.lat,
             lng: nextPosition.lng,
             position: { lat: nextPosition.lat, lng: nextPosition.lng, lon: nextPosition.lng },
+            worldPosition: createWorldPosition(nextPosition.lat, nextPosition.lng, missileWorldPosition.altitudeM),
             velocity: { speedKmh: flight.speedKmh, heading: missile.heading },
           });
         }
@@ -1501,17 +2180,50 @@ export const useEngine = create((set, get) => ({
       if (interceptedTargetIds.has(target.id)) return;
 
       const engagementTrack = updatedTracksById.get(missile.trackId);
+      const launchPhase = getInterceptorLaunchPhase(missile);
+      const missileAtLaunchPhase = missile.launchPhase === launchPhase
+        ? missile
+        : { ...missile, launchPhase };
+      const seeker = advanceMissileSeeker({
+        seeker: missile.seeker ?? createMissileSeeker(
+          getInterceptorSeekerProfile(missile.interceptorSpecId).id,
+          missile.launchTime,
+        ),
+        missile: missileAtLaunchPhase,
+        target,
+        networkTrack: engagementTrack,
+        simulationTime: nextSimulationTime,
+        deltaTimeSec,
+        enabled: state.seekerEnabled,
+      });
+      if (seeker.transition) {
+        emitEvent(seeker.transition.type, {
+          missileId: missile.id,
+          trackId: missile.trackId,
+          targetId: missile.targetId,
+          seekerProfileId: seeker.profileId,
+          seekerType: seeker.seekerType,
+          fromState: seeker.transition.fromState,
+          toState: seeker.transition.toState,
+        });
+      }
+      const missileWithSeeker = { ...missileAtLaunchPhase, seeker };
       const guidance = advanceInterceptorGuidance({
-        interceptor: missile,
+        interceptor: missileWithSeeker,
         track: engagementTrack,
         simulationTime: nextSimulationTime,
         deltaTimeSec,
         physics,
       });
-      const headingChangeDeg = getHeadingChangeDeg(missile.heading, guidance.heading);
+      const headingChangeDeg = getDirectionChangeDeg(
+        missile.heading,
+        guidance.heading,
+        missile.flightPathAngleDeg ?? 0,
+        guidance.flightPathAngleDeg ?? missile.flightPathAngleDeg ?? 0,
+      );
       let flight = advanceInterceptorFlight(missile, deltaTimeSec, physics, {
         headingChangeDeg,
-        headingCorrectionDeg: guidance.headingCorrectionDeg,
+        headingCorrectionDeg: guidance.directionCorrectionDeg ?? guidance.headingCorrectionDeg,
         altitudeM: missile.altitudeM,
       });
       if (guidance.failedReason) {
@@ -1521,7 +2233,7 @@ export const useEngine = create((set, get) => ({
           reason: guidance.failedReason,
         });
         activeMissiles.push({
-          ...missile,
+          ...missileWithSeeker,
           ...flight,
           lifecycleState: INTERCEPTOR_LIFECYCLE_STATE.MISSED,
           missedAtTime: nextSimulationTime,
@@ -1529,22 +2241,31 @@ export const useEngine = create((set, get) => ({
         });
         return;
       }
-      const physicsProfile = INTERCEPTOR_PHYSICS_PROFILES[state.simulationProfile.physicsLevel]
-        ?? INTERCEPTOR_PHYSICS_PROFILES.BASIC;
-      const altitudeFlight = physicsProfile.advanceAltitude
-        ? physicsProfile.advanceAltitude({
-          interceptor: { ...missile, ...flight, ...guidance },
-          targetAltitudeM: guidance.guidance.commandPosition.alt ?? target.altitudeM,
+      const altitudeFlight = missile.launchMode === LAUNCH_MODE.VERTICAL
+        && launchPhase !== INTERCEPTOR_LAUNCH_PHASE.GUIDANCE
+        ? advanceVerticalLaunchDeparture({
+          interceptor: missileAtLaunchPhase,
+          flight,
           deltaTimeSec,
-          travelDistanceKm: flight.travelDistanceKm,
-          physics,
+          launchPhase,
         })
-        : {
-          altitudeM: missile.altitudeM,
-          verticalSpeedMps: missile.verticalSpeedMps,
-          horizontalDistanceKm: flight.travelDistanceKm,
-          flightPhase: missile.flightPhase,
-        };
+        : (() => {
+          const flightPathAngleDeg = guidance.flightPathAngleDeg
+            ?? missile.flightPathAngleDeg
+            ?? 0;
+          const flightPathAngleRad = flightPathAngleDeg * Math.PI / 180;
+          const pathDistanceM = flight.travelDistanceKm * 1000;
+          const verticalTravelM = pathDistanceM * Math.sin(flightPathAngleRad);
+          return {
+            altitudeM: Math.max(0, missile.altitudeM + verticalTravelM),
+            verticalSpeedMps: flight.speedMps * Math.sin(flightPathAngleRad),
+            horizontalDistanceKm: pathDistanceM * Math.max(0, Math.cos(flightPathAngleRad)) / 1000,
+            flightPhase: guidance.guidanceState === INTERCEPTOR_GUIDANCE_STATE.TERMINAL
+              ? SIMPLE_FLIGHT_PHASE.TERMINAL
+              : SIMPLE_FLIGHT_PHASE.CRUISE,
+            flightPathAngleDeg,
+          };
+        })();
       flight = applyAltitudeEnergyExchange(
         flight,
         altitudeFlight.altitudeM - missile.altitudeM,
@@ -1552,45 +2273,33 @@ export const useEngine = create((set, get) => ({
         physics,
       );
       const nextPosition = getDestinationPoint(
-        missile.lat,
-        missile.lng,
+        missileWorldPosition.lat,
+        missileWorldPosition.lng,
         guidance.heading,
         altitudeFlight.horizontalDistanceKm,
       );
       const nextLat = nextPosition.lat;
       const nextLng = nextPosition.lng;
+      const nextWorldPosition = createWorldPosition(nextLat, nextLng, altitudeFlight.altitudeM);
+      const nextLaunchPhase = getInterceptorLaunchPhase(missile, flight.flightTime);
       const previousTarget = previousTargetsById.get(target.id) ?? target;
-      const sweptApproach = didSweptPathsEnterRadius({
-        interceptorStart: {
-          lat: missile.lat,
-          lng: missile.lng,
-          altitudeM: missile.altitudeM,
-        },
-        interceptorEnd: {
-          lat: nextLat,
-          lng: nextLng,
-          altitudeM: altitudeFlight.altitudeM,
-        },
-        targetStart: {
-          lat: previousTarget.position.lat,
-          lng: previousTarget.position.lng,
-          altitudeM: previousTarget.altitudeM,
-        },
-        targetEnd: {
-          lat: target.position.lat,
-          lng: target.position.lng,
-          altitudeM: target.altitudeM,
-        },
-      }, Math.min(
+      const previousTargetWorldPosition = getWorldPosition(previousTarget);
+      const targetWorldPosition = getWorldPosition(target);
+      const sweptApproach = didSweptPathsEnterRadiusMeters({
+        interceptorStart: missileWorldPosition,
+        interceptorEnd: nextWorldPosition,
+        targetStart: previousTargetWorldPosition,
+        targetEnd: targetWorldPosition,
+      }, missile.hitRadiusM ?? Math.min(
         physics.proximityFuseRadiusM,
         physics.minimumVisualContactDistanceM ?? physics.proximityFuseRadiusM,
-      ) / 1000);
+      ));
       const targetDistanceKm = sweptApproach.closestDistanceKm;
       const currentDistanceToTargetKm = getSlantDistanceKm(
-        { lat: nextLat, lng: nextLng },
-        altitudeFlight.altitudeM,
-        target.position,
-        target.altitudeM,
+        nextWorldPosition,
+        nextWorldPosition.altitudeM,
+        targetWorldPosition,
+        targetWorldPosition.altitudeM,
       );
       const improvedApproach = targetDistanceKm < missile.closestApproachKm;
       const closestApproachKm = improvedApproach
@@ -1599,18 +2308,6 @@ export const useEngine = create((set, get) => ({
       const timeSinceClosestApproachSec = improvedApproach
         ? 0
         : missile.timeSinceClosestApproachSec + deltaTimeSec;
-      const bearingToTarget = getBearing(
-        nextLat,
-        nextLng,
-        target.position.lat,
-        target.position.lng,
-      );
-      const targetRelativeHeadingDeg = getHeadingChangeDeg(
-        guidance.heading,
-        bearingToTarget,
-      );
-      const hasPassedTarget = targetRelativeHeadingDeg > 100;
-
       if (
         sweptApproach.intersects
         && flight.flightTime >= Math.max(
@@ -1622,25 +2319,39 @@ export const useEngine = create((set, get) => ({
         // brief simulation-time beat so the accepted intercept reads as a
         // direct visual impact instead of the missile disappearing nearby.
         activeMissiles.push({
-          ...missile,
+          ...missileWithSeeker,
           ...flight,
           ...guidance,
+          launchPhase: nextLaunchPhase,
           ...altitudeFlight,
-          lat: target.position.lat,
-          lng: target.position.lng,
+          lat: targetWorldPosition.lat,
+          lng: targetWorldPosition.lng,
           position: {
-            lat: target.position.lat,
-            lng: target.position.lng,
-            lon: target.position.lng,
+            lat: targetWorldPosition.lat,
+            lng: targetWorldPosition.lng,
+            lon: targetWorldPosition.lng,
           },
-          altitudeM: target.altitudeM,
+          worldPosition: { ...targetWorldPosition },
+          altitudeM: targetWorldPosition.altitudeM,
           lifecycleState: INTERCEPTOR_LIFECYCLE_STATE.IMPACT,
           impactStartedAt: nextSimulationTime,
-          impactTargetPosition: { ...target.position },
-          impactTargetAltitudeM: target.altitudeM,
+          impactTargetPosition: { ...targetWorldPosition },
+          impactTargetAltitudeM: targetWorldPosition.altitudeM,
           impactClosestApproachM: sweptApproach.closestDistanceKm * 1000,
+          // Presentation metadata only: retain the actual swept flight/contact
+          // pose before the legacy 2D impact beat places the sprite on target.
+          visualImpact: {
+            time: nextSimulationTime - deltaTimeSec * (1 - sweptApproach.timeFraction),
+            missilePosition: { ...sweptApproach.interceptorPosition },
+            targetPosition: { ...sweptApproach.targetPosition },
+          },
+          closestApproachKm,
           distanceToTargetKm: 0,
-          velocity: { speedKmh: flight.speedKmh, heading: guidance.heading },
+          velocity: createInterceptorVelocity(
+            flight.speedKmh,
+            guidance.heading,
+            altitudeFlight.flightPathAngleDeg ?? guidance.flightPathAngleDeg ?? 0,
+          ),
         });
       } else if (flight.terminated) {
         emitEvent(EVENT_TYPE.INTERCEPTOR_FAILED, {
@@ -1649,12 +2360,14 @@ export const useEngine = create((set, get) => ({
           reason: INTERCEPTOR_FAILURE_REASON.ENERGY_DEPLETED,
         });
         activeMissiles.push({
-          ...missile,
+          ...missileWithSeeker,
           ...flight,
           ...altitudeFlight,
+          launchPhase: nextLaunchPhase,
           lat: nextLat,
           lng: nextLng,
           position: { lat: nextLat, lng: nextLng, lon: nextLng },
+          worldPosition: nextWorldPosition,
           lifecycleState: INTERCEPTOR_LIFECYCLE_STATE.SELF_DESTRUCT,
           selfDestructTime: nextSimulationTime,
           selfDestructElapsedSec: 0,
@@ -1665,35 +2378,6 @@ export const useEngine = create((set, get) => ({
           trackId: missile.trackId,
           position: { lat: nextLat, lng: nextLng },
         });
-      } else if (
-        closestApproachKm <= physics.terminalRangeKm * 1.5
-        && timeSinceClosestApproachSec >= physics.postPassContinueSec
-        && hasPassedTarget
-      ) {
-        emitEvent(EVENT_TYPE.INTERCEPTOR_FAILED, {
-          missileId: missile.id,
-          trackId: missile.trackId,
-          reason: INTERCEPTOR_FAILURE_REASON.MISS,
-        });
-        activeMissiles.push({
-          ...missile,
-          ...flight,
-          ...guidance,
-          kinematicPhase: guidance.guidanceState === INTERCEPTOR_GUIDANCE_STATE.TERMINAL
-            ? INTERCEPTOR_KINEMATIC_PHASE.TERMINAL
-            : flight.motorPhase === 'BOOST'
-              ? INTERCEPTOR_KINEMATIC_PHASE.BOOST
-              : INTERCEPTOR_KINEMATIC_PHASE.MIDCOURSE,
-          ...altitudeFlight,
-          lat: nextLat,
-          lng: nextLng,
-          position: { lat: nextLat, lng: nextLng, lon: nextLng },
-          lifecycleState: INTERCEPTOR_LIFECYCLE_STATE.MISSED,
-          missedAtTime: nextSimulationTime,
-          failureReason: INTERCEPTOR_FAILURE_REASON.MISS,
-          distanceToTargetKm: currentDistanceToTargetKm,
-          sweptClosestApproachM: sweptApproach.closestDistanceKm * 1000,
-        });
       } else {
         const previousTrajectoryPoint = missile.trajectory.at(-1);
         const shouldAddTrajectoryPoint = !previousTrajectoryPoint || getDistanceKm(
@@ -1703,9 +2387,10 @@ export const useEngine = create((set, get) => ({
           nextLng,
         ) >= 0.5;
         activeMissiles.push({ 
-          ...missile,
+          ...missileWithSeeker,
           ...flight,
           ...guidance,
+          launchPhase: nextLaunchPhase,
           kinematicPhase: guidance.guidanceState === INTERCEPTOR_GUIDANCE_STATE.TERMINAL
             ? INTERCEPTOR_KINEMATIC_PHASE.TERMINAL
             : flight.motorPhase === 'BOOST'
@@ -1714,13 +2399,32 @@ export const useEngine = create((set, get) => ({
           lifecycleState: guidance.guidanceState === INTERCEPTOR_GUIDANCE_STATE.TERMINAL
             ? INTERCEPTOR_LIFECYCLE_STATE.TERMINAL
             : INTERCEPTOR_LIFECYCLE_STATE.FLYING,
-          desiredHeading: guidance.guidance.commandHeading,
+          desiredHeading: guidance.desiredHeading ?? guidance.guidance.commandHeading,
+          guidanceState: guidance.guidanceState,
           turnRateDegPerSec: guidance.turnRateDegPerSec,
           headingCorrectionDeg: guidance.headingCorrectionDeg,
           maximumTurnRateDegPerSec: guidance.maximumTurnRateDegPerSec,
           turnEnergyFactor: guidance.energyFactor,
           turnSpeedFactor: guidance.speedFactor,
           turnRadiusKm: guidance.turnRadiusKm,
+          navigationConstant: guidance.navigationConstant,
+          closingSpeedMps: guidance.closingSpeedMps,
+          losAngleDeg: guidance.losAngleDeg,
+          losRateDegPerSec: guidance.losRateDegPerSec,
+          commandedLateralAccelerationMps2: guidance.commandedLateralAccelerationMps2,
+          actualLateralAccelerationMps2: guidance.actualLateralAccelerationMps2,
+          currentG: guidance.currentG,
+          availableG: guidance.availableG,
+          maximumG: guidance.maximumG,
+          profileMaxG: guidance.profileMaxG,
+          aeroAvailableG: guidance.aeroAvailableG,
+          energyLimitedG: guidance.energyLimitedG,
+          autopilotAllowedG: guidance.autopilotAllowedG,
+          predictedInterceptDistanceKm: guidance.predictedInterceptDistanceKm,
+          estimatedTimeToGoSec: guidance.estimatedTimeToGoSec,
+          predictedClosestApproachM: guidance.predictedClosestApproachM,
+          interceptSolutionStatus: guidance.interceptSolutionStatus,
+          interceptQuality: guidance.interceptQuality,
           distanceToTargetKm: currentDistanceToTargetKm,
           sweptClosestApproachM: sweptApproach.closestDistanceKm * 1000,
           fuseRadiusM: physics.proximityFuseRadiusM,
@@ -1737,10 +2441,16 @@ export const useEngine = create((set, get) => ({
           lat: nextLat,
           lng: nextLng,
           position: { lat: nextLat, lng: nextLng, lon: nextLng },
-          velocity: { speedKmh: flight.speedKmh, heading: guidance.heading },
+          worldPosition: nextWorldPosition,
+          velocity: createInterceptorVelocity(
+            flight.speedKmh,
+            guidance.heading,
+            altitudeFlight.flightPathAngleDeg ?? guidance.flightPathAngleDeg ?? 0,
+          ),
         });
       }
     });
+    checkpoint(SIMULATION_SUBSYSTEM.MISSILE_KINEMATICS);
 
     let survivingTargets = updatedTargets.filter(target => !interceptedTargetIds.has(target.id));
     const survivingTargetIds = new Set(survivingTargets.map(target => target.id));
@@ -1749,6 +2459,7 @@ export const useEngine = create((set, get) => ({
       survivingTargetIds.has(contact.targetId)
     ));
     const selectedTrackStillExists = survivingTracks.some(track => track.id === state.selectedTrackId);
+    const hoveredTrackStillExists = survivingTracks.some(track => track.id === state.hoveredTrackId);
 
     const survivingTrackIds = new Set(survivingTracks.map(track => track.id));
     let finalLaunchQueue = launchQueue.filter(queueItem => {
@@ -1763,17 +2474,39 @@ export const useEngine = create((set, get) => ({
     let nextMissileSequence = state.nextMissileSequence;
     let nextAutoDecisionTime = state.nextAutoDecisionTime;
     let nextAutoEngagementAttempts = { ...state.autoEngagementAttempts };
+    let nextEngagementAssignments = state.engagementAssignments;
+    let nextCoordinatorMetrics = state.coordinatorMetrics;
+    let nextCoordinatorEvaluationCursor = state.coordinatorEvaluationCursor;
+    let nextCoordinatorCandidateCache = state.coordinatorCandidateCache;
+    const previousTrackIds = new Set(state.tracks.map(track => track.id));
+    const previousMissilesById = new Map(state.missiles.map(missile => [missile.id, missile]));
+    const coordinatorCriticalEvent = survivingTracks.some(track => (
+      !previousTrackIds.has(track.id)
+    )) || activeMissiles.some(missile => {
+      const previous = previousMissilesById.get(missile.id);
+      return previous && (
+        previous.lifecycleState !== missile.lifecycleState
+        || previous.guidanceState !== missile.guidanceState
+          && missile.guidanceState === INTERCEPTOR_GUIDANCE_STATE.INTERCEPT_LOST
+      );
+    });
+    checkpoint(SIMULATION_SUBSYSTEM.EVENTS);
 
-    if (nextSimulationTime >= state.nextAutoDecisionTime) {
-      nextAutoDecisionTime = nextSimulationTime + AUTO_DECISION_INTERVAL_SEC;
+    if (coordinatorCriticalEvent || nextSimulationTime >= state.nextAutoDecisionTime) {
+      nextAutoDecisionTime = nextSimulationTime + getAutoDecisionIntervalSec(state.timeScale);
       let registry = buildEngagementRegistry({
         missiles: activeMissiles,
         pendingLaunches: nextPendingLaunches,
         launchQueue: finalLaunchQueue,
         gunEngagements: nextGunEngagements,
       });
+      const fireControlTargets = survivingTracks.map(track => createFireControlTargetEstimate(
+        track,
+        survivingTargets.find(target => target.id === track.targetId),
+        nextSimulationTime,
+      )).filter(Boolean);
       const targetDefenseAssessments = buildTargetDefenseAssessments({
-        targets: survivingTargets,
+        targets: fireControlTargets,
         tracks: survivingTracks,
         batteries: batteriesWithScanFeedback,
         simulationTime: nextSimulationTime,
@@ -1782,45 +2515,42 @@ export const useEngine = create((set, get) => ({
         ...target,
         defenseAssessment: targetDefenseAssessments.get(target.id) ?? null,
       }));
-      const targetsById = new Map(survivingTargets.map(target => [target.id, target]));
-      const priorityPatriots = batteriesWithScanFeedback.filter(battery => {
-        if (!isPatriotBattery(battery)) return false;
-        if (![BATTERY_CONTROL_MODE.AUTO, BATTERY_CONTROL_MODE.ASSIST].includes(battery.controlMode)) {
-          return false;
-        }
-        const doctrine = DOCTRINE_CONFIG[battery.doctrine]
-          ?? DOCTRINE_CONFIG[DEFENSE_DOCTRINE.BALANCED];
-        return battery.missilesLeft - getQueuedCountForBattery(finalLaunchQueue, battery.id)
-          > doctrine.reserveMissiles;
+      const coordination = coordinateEngagements({
+        targets: survivingTargets,
+        tracks: survivingTracks,
+        batteries: batteriesWithScanFeedback,
+        missiles: activeMissiles,
+        pendingLaunches: nextPendingLaunches,
+        launchQueue: finalLaunchQueue,
+        gunEngagements: nextGunEngagements,
+        previousAssignments: state.engagementAssignments,
+        simulationTime: nextSimulationTime,
+        capabilities: state.coordinatorCapabilities,
+        evaluationCursor: state.coordinatorEvaluationCursor,
+        candidateCache: state.coordinatorCandidateCache,
       });
-      const priorityPatriotIds = new Set(priorityPatriots.map(battery => battery.id));
-      const patriotReservedTrackIds = new Set(survivingTracks.flatMap(track => {
-        const target = targetsById.get(track.targetId);
-        if (!isBallisticTarget(target)) return [];
-        const existingAssignment = registry.get(track.id);
-        const alreadyHandledByPatriot = existingAssignment
-          && [...existingAssignment.batteryIds].some(batteryId => priorityPatriotIds.has(batteryId));
-        const visibleToCapablePatriot = priorityPatriots.some(battery => (
-          isRadarSensorOperational(battery)
-          && isTargetInRadarCoverage(battery, target)
-          && rankThreatsForBattery({
-            battery,
-            tracks: [track],
-            targets: [target],
-            registry,
-          }).length > 0
-        ));
-        return alreadyHandledByPatriot || visibleToCapablePatriot ? [track.id] : [];
-      }));
+      nextEngagementAssignments = coordination.assignments;
+      nextCoordinatorMetrics = coordination.metrics;
+      nextCoordinatorEvaluationCursor = coordination.metrics.nextEvaluationCursor;
+      nextCoordinatorCandidateCache = coordination.candidateCache;
+      survivingTargets = survivingTargets.map(target => {
+        const track = survivingTracks.find(candidate => candidate.targetId === target.id);
+        return {
+          ...target,
+          engagementCoordination: track ? coordination.assignments[track.id] ?? null : null,
+        };
+      });
+      const targetsById = new Map(survivingTargets.map(target => [target.id, target]));
+      const automaticActionKeys = new Set(coordination.autoActions.map(candidate => (
+        `${candidate.battery.id}:${candidate.track.id}`
+      )));
       const batteryUpdates = new Map();
       [...batteriesWithScanFeedback]
-        .sort((first, second) => (
-          Number(isPatriotBattery(second)) - Number(isPatriotBattery(first))
-          || first.id.localeCompare(second.id)
-        ))
+        .sort((first, second) => first.id.localeCompare(second.id))
         .forEach(originalBattery => {
           const battery = batteryUpdates.get(originalBattery.id) ?? originalBattery;
           const controlMode = battery.controlMode ?? BATTERY_CONTROL_MODE.MANUAL;
+          const coordinatedCandidate = coordination.recommendations.get(battery.id) ?? null;
           if (controlMode === BATTERY_CONTROL_MODE.HOLD) {
             batteryUpdates.set(battery.id, {
               ...battery,
@@ -1835,8 +2565,8 @@ export const useEngine = create((set, get) => ({
             batteryUpdates.set(battery.id, {
               ...battery,
               autoStatus: AUTO_DEFENSE_STATUS.MANUAL,
-              recommendedTrackId: null,
-              autoDecision: null,
+              recommendedTrackId: coordinatedCandidate?.track.id ?? null,
+              autoDecision: coordinatedCandidate?.plan ?? null,
             });
             return;
           }
@@ -1858,33 +2588,14 @@ export const useEngine = create((set, get) => ({
             return;
           }
 
-          const rankedThreats = rankThreatsForBattery({
-            battery,
-            tracks: isPatriotBattery(battery)
-              ? survivingTracks
-              : survivingTracks.filter(track => !patriotReservedTrackIds.has(track.id)),
-            targets: survivingTargets,
-            registry,
-          });
-          const plannedThreats = rankedThreats.map(threat => {
-            const track = survivingTracks.find(candidate => candidate.id === threat.trackId);
-            const target = targetsById.get(threat.targetId);
-            return {
-              threat,
-              track,
-              target,
-              plan: planAutomaticEngagement({
-                battery,
-                track,
-                target,
-                threat,
-                allBatteries: batteriesWithScanFeedback,
-              }),
-            };
-          });
+          const plannedThreats = coordinatedCandidate ? [{
+            threat: coordinatedCandidate.threat,
+            track: coordinatedCandidate.track,
+            target: targetsById.get(coordinatedCandidate.target.id) ?? coordinatedCandidate.target,
+            plan: coordinatedCandidate.plan,
+          }] : [];
           const actionable = plannedThreats.find(candidate => (
-            candidate.plan.decision === AUTO_ENGAGEMENT_DECISION.ENGAGE
-            && candidate.threat.score >= doctrine.minimumThreatScore
+            automaticActionKeys.has(`${battery.id}:${candidate.track.id}`)
             && candidate.threat.interceptSolution?.status !== INTERCEPT_FEASIBILITY.NO_SOLUTION
             && (nextAutoEngagementAttempts[`${battery.id}:${candidate.threat.trackId}`] ?? 0)
               < getInterceptorEngagementPolicy(battery).maximumAutomaticAttempts
@@ -1989,6 +2700,7 @@ export const useEngine = create((set, get) => ({
             target,
             requestedBy: BATTERY_CONTROL_MODE.AUTO,
             simulationTime: nextSimulationTime,
+            preferredLauncherId: coordinatedCandidate?.launcherId ?? null,
           });
           if (!queueItem) return;
           finalLaunchQueue = [...finalLaunchQueue, queueItem];
@@ -2035,11 +2747,17 @@ export const useEngine = create((set, get) => ({
         batteryUpdates.get(battery.id) ?? battery
       ));
     }
+    checkpoint(SIMULATION_SUBSYSTEM.AUTO);
+    updateCalculationMs = (globalThis.performance?.now?.() ?? Date.now()) - calculationStartedAt;
 
     return {
       simulationTime: nextSimulationTime,
       batteries: batteriesWithScanFeedback,
+      searchRadars: updatedSearchRadars,
       airTargets: survivingTargets,
+      controllableAirEntities: updatedControllableAirEntities.filter(entity => (
+        !entity.terminalAt || nextSimulationTime - entity.terminalAt < 1.1
+      )),
       tracks: survivingTracks,
       sensorContacts: survivingSensorContacts,
       missiles: activeMissiles,
@@ -2054,16 +2772,46 @@ export const useEngine = create((set, get) => ({
           survivingTrackIds.has(key.slice(key.indexOf(':') + 1))
         )),
       ),
+      engagementAssignments: nextEngagementAssignments,
+      coordinatorMetrics: nextCoordinatorMetrics,
+      coordinatorEvaluationCursor: nextCoordinatorEvaluationCursor,
+      coordinatorCandidateCache: nextCoordinatorCandidateCache,
       nextTrackSequence,
       spawnedTargetIds: [...spawnedTargetIds],
       announcedGroupIds: [...announcedGroupIds],
       events: events.slice(-100),
       nextEventSequence,
       selectedTrackId: selectedTrackStillExists ? state.selectedTrackId : null,
+      hoveredTrackId: hoveredTrackStillExists ? state.hoveredTrackId : null,
       selectedMissileId: activeMissiles.some(missile => missile.id === state.selectedMissileId)
         ? state.selectedMissileId
         : null,
-      selectedBatteryId: selectedTrackStillExists ? state.selectedBatteryId : null,
+      selectedBatteryId: batteriesWithScanFeedback.some(
+        battery => battery.id === state.selectedBatteryId,
+      ) ? state.selectedBatteryId : null,
+      selectedControllableEntityId: updatedControllableAirEntities.some(
+        entity => entity.id === state.selectedControllableEntityId,
+      ) ? state.selectedControllableEntityId : null,
+      controlledControllableEntityId: controlledControllableStillActive
+        && updatedControllableAirEntities.some(entity => (
+          entity.id === state.controlledControllableEntityId
+          && entity.status === CONTROLLABLE_STATUS.ACTIVE
+        ))
+        ? state.controlledControllableEntityId
+        : null,
     };
-  })
+    });
+    const controlledEntityId = useManualControlStore.getState().ownerEntityId;
+    if (controlledEntityId && get().controlledControllableEntityId !== controlledEntityId) {
+      useManualControlStore.getState().release(controlledEntityId);
+    }
+    if (updated) {
+      const updateFinishedAt = globalThis.performance?.now?.() ?? Date.now();
+      recordSimulationSubsystem(
+        SIMULATION_SUBSYSTEM.STORE_COMMIT,
+        Math.max(0, updateFinishedAt - updateStartedAt - updateCalculationMs),
+      );
+      recordSimulationUpdate(updateFinishedAt - updateStartedAt);
+    }
+  },
 }));

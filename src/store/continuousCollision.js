@@ -95,3 +95,7 @@ export function didSweptPathsEnterRadius(paths, radiusKm) {
     intersects: approach.closestDistanceKm <= radiusKm,
   };
 }
+
+export function didSweptPathsEnterRadiusMeters(paths, radiusMeters) {
+  return didSweptPathsEnterRadius(paths, Math.max(0, radiusMeters) / 1000);
+}

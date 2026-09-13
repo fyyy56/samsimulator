@@ -52,7 +52,7 @@ const prepareOpaqueAsset = (source) => {
   return promise;
 };
 
-export default function LightMapSprite({ assetId, sourceUrl = null, sourceOffsetX = 0, sourceOffsetY = 0, heading = 0, className = '', selected = false, sizePx = null }) {
+export default function LightMapSprite({ assetId, sourceUrl = null, sourceOffsetX = 0, sourceOffsetY = 0, heading = 0, rotationOffsetDeg = null, mirrorX = false, mirrorY = false, visualScale = 1, className = '', selected = false, sizePx = null }) {
   const packagedAsset = getLightAsset(assetId);
   const asset = sourceUrl ? {
     ...packagedAsset,
@@ -66,7 +66,7 @@ export default function LightMapSprite({ assetId, sourceUrl = null, sourceOffset
   ));
   const requestedRotation = asset.lockSpriteRotation
     ? 0
-    : heading + (asset.assetRotationOffsetDeg ?? asset.orientationOffsetDeg ?? 0);
+    : heading + (rotationOffsetDeg ?? asset.assetRotationOffsetDeg ?? asset.orientationOffsetDeg ?? 0);
   const imageRef = useRef(null);
   const continuousRotationRef = useRef(Number.NaN);
 
@@ -76,9 +76,9 @@ export default function LightMapSprite({ assetId, sourceUrl = null, sourceOffset
       : unwrapRotationDegrees(continuousRotationRef.current, requestedRotation);
     continuousRotationRef.current = continuousRotation;
     if (imageRef.current) {
-      imageRef.current.style.transform = `translate(${sourceOffsetX}px, ${sourceOffsetY}px) rotate(${continuousRotation}deg)`;
+      imageRef.current.style.transform = `translate(${sourceOffsetX}px, ${sourceOffsetY}px) rotate(${continuousRotation}deg) scale(${mirrorX ? -visualScale : visualScale}, ${mirrorY ? -visualScale : visualScale})`;
     }
-  }, [asset.lockSpriteRotation, requestedRotation, renderedSource, sourceOffsetX, sourceOffsetY]);
+  }, [asset.lockSpriteRotation, mirrorX, mirrorY, requestedRotation, renderedSource, sourceOffsetX, sourceOffsetY, visualScale]);
 
   useEffect(() => {
     let active = true;

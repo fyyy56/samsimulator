@@ -35,7 +35,12 @@ export default function ReferenceModelViewport({ item, modelUrl = null, fallback
     let dragging = false;
     let dragX = 0;
     let dragY = 0;
-    const view = { heading: 0.65, pitch: -0.28, range: 45 };
+    const missilePreview = item.previewCameraPreset === 'TOP_VIEW_MISSILE';
+    const view = {
+      heading: missilePreview ? 0.78 : 0.65,
+      pitch: missilePreview ? -0.2 : -0.28,
+      range: 45,
+    };
     const startedAt = performance.now();
 
     const initialize = async () => {
@@ -53,6 +58,15 @@ export default function ReferenceModelViewport({ item, modelUrl = null, fallback
         scene.sun = undefined;
         scene.moon = undefined;
         scene.fog.enabled = false;
+        const keyLightDirection = CesiumApi.Cartesian3.normalize(
+          new CesiumApi.Cartesian3(-1, -0.55, -0.8),
+          new CesiumApi.Cartesian3(),
+        );
+        scene.light = new CesiumApi.DirectionalLight({
+          direction: keyLightDirection,
+          color: CesiumApi.Color.fromCssColorString('#f4f7f2'),
+          intensity: 2.15,
+        });
 
         const origin = CesiumApi.Cartesian3.fromDegrees(0, 0, 0);
         baseModelMatrix = CesiumApi.Transforms.eastNorthUpToFixedFrame(origin);
@@ -66,6 +80,20 @@ export default function ReferenceModelViewport({ item, modelUrl = null, fallback
           model.destroy();
           return;
         }
+        // A neutral studio-like fill keeps dark vehicle textures readable
+        // without flattening their materials or washing out the camouflage.
+        model.imageBasedLighting.imageBasedLightingFactor = new CesiumApi.Cartesian2(1, 1);
+        model.imageBasedLighting.sphericalHarmonicCoefficients = [
+          new CesiumApi.Cartesian3(0.55, 0.56, 0.58),
+          new CesiumApi.Cartesian3(0, 0, 0),
+          new CesiumApi.Cartesian3(0.045, 0.05, 0.058),
+          new CesiumApi.Cartesian3(-0.022, -0.022, -0.018),
+          new CesiumApi.Cartesian3(0, 0, 0),
+          new CesiumApi.Cartesian3(0, 0, 0),
+          new CesiumApi.Cartesian3(0, 0, 0),
+          new CesiumApi.Cartesian3(0, 0, 0),
+          new CesiumApi.Cartesian3(0, 0, 0),
+        ];
         scene.primitives.add(model);
         scene.camera.lookAt(
           origin,
@@ -158,7 +186,9 @@ export default function ReferenceModelViewport({ item, modelUrl = null, fallback
           scene.render();
           if (!cameraFramed && model?.ready && model.boundingSphere) {
             frameSphere = CesiumApi.BoundingSphere.clone(model.boundingSphere);
-            view.range = Math.max(frameSphere.radius * 3.2, 14);
+            view.range = missilePreview
+              ? Math.max(frameSphere.radius * 2.35, 6.2)
+              : Math.max(frameSphere.radius * 3.2, 14);
             updateCamera();
             cameraFramed = true;
           }
@@ -181,7 +211,7 @@ export default function ReferenceModelViewport({ item, modelUrl = null, fallback
       removeInputListeners?.();
       if (scene && !scene.isDestroyed()) scene.destroy();
     };
-  }, [activeModelUrl]);
+  }, [activeModelUrl, item.previewCameraPreset]);
 
   const uploadModel = event => {
     const file = event.target.files?.[0];

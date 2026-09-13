@@ -5,10 +5,12 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.jsx'
 import DesignModeOverlay from './ui/DesignModeOverlay.jsx'
+import DevBuildIdentity from './ui/DevBuildIdentity.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <App />
     <DesignModeOverlay />
+    <DevBuildIdentity />
   </StrictMode>,
 )

@@ -1,0 +1,14 @@
+.ols-hud { position: absolute; inset: 0; z-index: 20; pointer-events: none; color: #e0efe9; font: 12px Inter, sans-serif; }
+.ols-bar { position: absolute; left: 16px; right: 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; border: 1px solid #a1d5dd30; background: #061017c9; backdrop-filter: blur(12px); pointer-events: auto; }
+header.ols-bar { top: 16px; } footer.ols-bar { bottom: 16px; }
+.ols-bar strong { letter-spacing: .12em; } .ols-bar small, .ols-contacts small { display: block; color: #94adb4; font-size: 10px; letter-spacing: .04em; }
+.ols-hud button { color: inherit; background: #132830aa; border: 1px solid #aeced32b; padding: 7px 10px; cursor: pointer; border-radius: 3px; }
+.ols-hud button[aria-pressed="true"] { border-color: #a7e6d1; background: #23453e; }
+.ols-bar > div { display: flex; align-items: center; gap: 6px; }
+.ols-bar output, .ols-bar > span { font-family: monospace; } .ols-bar output { min-width: 42px; text-align: center; }
+.ols-contacts { position: absolute; right: 16px; top: 85px; display: grid; gap: 5px; max-width: 185px; pointer-events: auto; }
+.ols-contacts > button { text-align: left; background: #07141aa6; }
+.ols-reticle { position: absolute; left: 50%; top: 50%; width: 16px; height: 16px; transform: translate(-50%, -50%); border: 1px solid #d4f6e347; border-radius: 50%; }
+.ols-bracket { display: none; position: absolute; left: 0; top: 0; width: 30px; height: 30px; margin: -15px; border: 1px solid #baffd6; box-shadow: 0 0 2px #000; }
+.advanced-backend { position: absolute; inset: 0; } .advanced-backend.is-prewarming { visibility: hidden; pointer-events: none; }
+@media (max-width: 700px) { .ols-bar { left: 6px; right: 6px; gap: 5px; padding: 6px; flex-wrap: wrap; } .ols-hud button { padding: 7px; font-size: 10px; } .ols-bar > small { display: none; } .ols-contacts { top: 105px; right: 6px; max-width: 140px; } }

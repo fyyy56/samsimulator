@@ -10,6 +10,7 @@ export default function ScenarioLibraryScene() {
   const loadScenarioIntoEditor = useContentStore(state => state.loadScenarioIntoEditor);
   const startScenario = useGameStore(state => state.startScenario);
   const openEditor = useGameStore(state => state.openEditor);
+  const openEditorMap = useGameStore(state => state.openEditorMap);
   return (
     <ContentShell eyebrow="Операции" title="Сценарии" actions={<button className="content-primary" onClick={openEditor}>+ Создать сценарий</button>}>
       <div className="scenario-grid">
@@ -25,7 +26,7 @@ export default function ScenarioLibraryScene() {
           <small>{scenario.updatedAt ? new Date(scenario.updatedAt).toLocaleString('ru-RU') : ''}</small>
           <div className="scenario-card__actions">
             <button onClick={() => startScenario(scenario.id)}>Запустить</button>
-            <button onClick={() => { loadScenarioIntoEditor(scenario.id); openEditor(); }}>Изменить</button>
+            <button onClick={() => { loadScenarioIntoEditor(scenario.id); openEditorMap(); }}>Изменить</button>
             <button className="is-danger" onClick={() => deleteScenario(scenario.id)}>Удалить</button>
           </div>
         </DesignableSurface>)}

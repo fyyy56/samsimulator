@@ -130,6 +130,7 @@ const createTargetDefinition = ({
   altitudeState,
   modelId,
   gameplayProfile,
+  ballisticPhysics = null,
 }) => {
   return {
     id,
@@ -155,6 +156,7 @@ const createTargetDefinition = ({
     groupId,
     groupSize,
     launchPattern,
+    ballisticPhysics,
   };
 };
 
@@ -173,8 +175,11 @@ const createWaveGroup = ({
   const launchPattern = count === 1 ? 'SINGLE' : (random() > 0.45 ? 'FORMATION' : 'GROUP');
   const groupId = `${waveId}-GRP-${String(groupIndex + 1).padStart(2, '0')}`;
   const groupDelay = between(random, 0, 13);
-  const gameplayProfile = getAirTargetGameplayProfile(type);
-  const modelId = pick(random, gameplayProfile.models);
+  const fallbackProfile = getAirTargetGameplayProfile(type);
+  const modelId = type === SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE
+    ? LIGHT_TARGET_MODEL.ISKANDER_M
+    : pick(random, fallbackProfile.models);
+  const gameplayProfile = getAirTargetGameplayProfile(type, modelId);
   const sharedRoutePlan = createSharedRoutePlan({
     type,
     count,
@@ -301,12 +306,29 @@ export function createManualTargetDefinitions({
   seed,
   idStart,
   spawnOffsetSeconds = 0,
+  aimPoint = null,
+  terminalCorrectionAngleDeg = 0,
+  terminalCorrectionCount = 0,
+  terminalCorrectionSide = 'AUTO',
+  ballisticManeuverMode = 'AUTO',
 }) {
   const random = createSeededRandom(seed);
-  const objective = getObjective(objectiveId);
+  const objective = aimPoint ? {
+    id: 'SANDBOX-AIM-POINT',
+    name: 'Sandbox aim point',
+    category: 'TEST AIM POINT',
+    protectionPriority: 0.5,
+    position: { ...aimPoint },
+  } : getObjective(objectiveId);
   const groupId = `SANDBOX-GRP-${String(idStart).padStart(3, '0')}`;
   const launchPattern = count === 1 ? 'SINGLE' : 'FORMATION';
-  const gameplayProfile = getAirTargetGameplayProfile(type);
+  const fallbackProfile = getAirTargetGameplayProfile(type);
+  const resolvedModelId = modelId ?? (
+    type === SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE
+      ? LIGHT_TARGET_MODEL.ISKANDER_M
+      : fallbackProfile.models[0]
+  );
+  const gameplayProfile = getAirTargetGameplayProfile(type, resolvedModelId);
   const sharedRoutePlan = createSharedRoutePlan({
     type,
     count,
@@ -349,12 +371,19 @@ export function createManualTargetDefinitions({
         random,
         requestedAltitudeM: altitudeM,
       }),
-      modelId: modelId ?? (
-        type === SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE
-          ? LIGHT_TARGET_MODEL.ISKANDER_M
-          : gameplayProfile.models[0]
-      ),
+      modelId: resolvedModelId,
       gameplayProfile,
+      ballisticPhysics: type === SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE ? {
+        enabled: true,
+        aimPoint: { ...objective.position },
+        terminalCorrection: {
+          mode: ballisticManeuverMode,
+          angleDeg: terminalCorrectionAngleDeg,
+          count: terminalCorrectionCount,
+          side: terminalCorrectionSide,
+          seed,
+        },
+      } : null,
     });
   });
 }

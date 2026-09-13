@@ -7,9 +7,12 @@ import {
   RADAR_SENSOR_PROFILE_ID,
   RADAR_SENSOR_PROFILES,
   SENSOR_EVIDENCE_CONFIG,
+  SENSOR_PHYSICS_CONFIG,
   TARGET_SENSOR_PROFILES,
 } from '../data/sensorDetectionProfiles.js';
-import { getDistanceKm } from './geo.js';
+import { getDestinationPoint } from './geo.js';
+import { getRadarGeometry } from './radarSystem.js';
+import { getEvidenceDecayDelaySeconds, getTrackCoastSeconds } from './sensorCadence.js';
 
 export const SENSOR_EVIDENCE_STAGE = Object.freeze({
   DETECTED: 'DETECTED',
@@ -19,6 +22,7 @@ export const SENSOR_EVIDENCE_STAGE = Object.freeze({
 
 const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
 const clamp01 = value => clamp(value, 0, 1);
+export const RADAR_SOURCE_TAKEOVER_RATIO = 1.16;
 
 export const makeSensorContactKey = (sourceBatteryId, targetId) => (
   `${sourceBatteryId}:${targetId}`
@@ -43,15 +47,18 @@ export function getRadarSensorProfile(battery) {
 }
 
 export function getTargetSensorProfile(target) {
-  const sensorProfile = TARGET_SENSOR_PROFILES[target?.type]
+  const sensorProfile = TARGET_SENSOR_PROFILES[target?.modelId]
+    ?? TARGET_SENSOR_PROFILES[target?.type]
     ?? TARGET_SENSOR_PROFILES.DEFAULT;
   const gameplayProfile = AIR_TARGET_GAMEPLAY_PROFILES[target?.type];
   return {
     ...sensorProfile,
-    sensorSignature: clamp01(
-      target?.sensorSignature
+    radarSignature: clamp01(
+      target?.radarSignature
+      ?? target?.sensorSignature
+      ?? sensorProfile.radarSignature
       ?? gameplayProfile?.sensorSignature
-      ?? TARGET_SENSOR_PROFILES.DEFAULT.sensorSignature,
+      ?? TARGET_SENSOR_PROFILES.DEFAULT.radarSignature,
     ),
   };
 }
@@ -87,13 +94,144 @@ const getConfidence = (evidence, thresholds) => ({
   ),
 });
 
-const getRangeFactor = (distanceKm, maximumRangeKm, radarProfile) => {
+const getRangeFactor = (distanceKm, maximumRangeKm, radarProfile, radarSignature) => {
   if (!Number.isFinite(distanceKm) || maximumRangeKm <= 0 || distanceKm > maximumRangeKm) return 0;
-  const normalizedRange = clamp01(distanceKm / maximumRangeKm);
+  const signatureRangeFactor = 0.58 + 0.42 * Math.sqrt(clamp01(radarSignature));
+  const effectiveRangeKm = maximumRangeKm * signatureRangeFactor;
+  if (distanceKm > effectiveRangeKm) return 0;
+  const normalizedRange = clamp01(distanceKm / effectiveRangeKm);
   const falloff = 1 - normalizedRange ** radarProfile.rangeFalloffExponent;
-  return radarProfile.minimumRangeFactor
-    + (1 - radarProfile.minimumRangeFactor) * falloff;
+  return Math.max(0, radarProfile.minimumRangeFactor * 0.25
+    + (1 - radarProfile.minimumRangeFactor * 0.25) * falloff);
 };
+
+const smoothstep = value => {
+  const normalized = clamp01(value);
+  return normalized * normalized * (3 - 2 * normalized);
+};
+
+const deterministicUnit = (key) => {
+  let hash = 2166136261;
+  for (let index = 0; index < key.length; index += 1) {
+    hash ^= key.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) / 4294967295;
+};
+
+export function calculateRadarDetection({ battery, target }) {
+  const radarProfile = getRadarSensorProfile(battery);
+  const targetProfile = getTargetSensorProfile(target);
+  const geometry = getRadarGeometry(battery, target, radarProfile);
+  const rangeFactor = geometry.insideNominalCoverage && geometry.hasLineOfSight
+    ? getRangeFactor(
+      geometry.distanceKm,
+      battery.radarRangeKm,
+      radarProfile,
+      targetProfile.radarSignature,
+    )
+    : 0;
+  const altitudeM = geometry.targetHeightM ?? 0;
+  const clutterClearance = smoothstep(
+    (altitudeM - SENSOR_PHYSICS_CONFIG.lowAltitudeClutterCeilingM)
+      / Math.max(1, SENSOR_PHYSICS_CONFIG.fullClutterClearanceM
+        - SENSOR_PHYSICS_CONFIG.lowAltitudeClutterCeilingM),
+  );
+  const clutterFactor = targetProfile.lowAltitudeDetectability
+    + (1 - targetProfile.lowAltitudeDetectability) * clutterClearance;
+  const radarLowAltitudeFactor = (radarProfile.lowAltitudePerformance ?? 1)
+    + (1 - (radarProfile.lowAltitudePerformance ?? 1)) * clutterClearance;
+  const signatureFactor = 0.4 + 0.6 * Math.sqrt(targetProfile.radarSignature);
+  const detectionScore = clamp01(
+    rangeFactor
+      * clutterFactor
+      * radarLowAltitudeFactor
+      * signatureFactor
+      * (radarProfile.sensitivity ?? 1)
+      * (targetProfile.radarSignature < 0.45 ? radarProfile.smallTargetPerformance ?? 1 : 1)
+      * SENSOR_PHYSICS_CONFIG.terrainOcclusionFactor
+      * SENSOR_PHYSICS_CONFIG.environmentFactor
+      * SENSOR_PHYSICS_CONFIG.jammingFactor,
+  );
+  return {
+    ...geometry,
+    rangeFactor,
+    clutterFactor,
+    radarLowAltitudeFactor,
+    signatureFactor,
+    detectionScore,
+    radarSignature: targetProfile.radarSignature,
+    terrainOcclusionFactor: SENSOR_PHYSICS_CONFIG.terrainOcclusionFactor,
+    environmentFactor: SENSOR_PHYSICS_CONFIG.environmentFactor,
+    jammingFactor: SENSOR_PHYSICS_CONFIG.jammingFactor,
+    detectable: geometry.insideNominalCoverage
+      && geometry.hasLineOfSight
+      && detectionScore >= SENSOR_PHYSICS_CONFIG.minimumDetectionScore,
+  };
+}
+
+function createRadarMeasurement({ battery, target, simulationTime, sequence, detection }) {
+  const radarProfile = getRadarSensorProfile(battery);
+  const score = clamp01(
+    detection.detectionScore * (radarProfile.measurementQualityMultiplier ?? 1),
+  );
+  const normalizedRange = clamp01(detection.distanceKm / Math.max(1, battery.radarRangeKm));
+  const positionUncertaintyM = (SENSOR_EVIDENCE_CONFIG.measurementPositionErrorBaseM
+    + SENSOR_EVIDENCE_CONFIG.measurementPositionErrorAtMaxRangeM
+      * normalizedRange * (1.15 - score))
+    * (radarProfile.positionUncertaintyMultiplier ?? 1);
+  const altitudeUncertaintyM = (SENSOR_EVIDENCE_CONFIG.measurementAltitudeErrorBaseM
+    + SENSOR_EVIDENCE_CONFIG.measurementAltitudeErrorAtMaxRangeM
+      * normalizedRange * (1.15 - score))
+    * (radarProfile.altitudeUncertaintyMultiplier ?? 1);
+  const key = `${battery.id}:${target.id}:${sequence}`;
+  const radialErrorM = (deterministicUnit(`${key}:range`) * 2 - 1) * positionUncertaintyM;
+  const crossErrorM = (deterministicUnit(`${key}:cross`) * 2 - 1) * positionUncertaintyM * 0.65;
+  const measuredRadial = getDestinationPoint(
+    target.position.lat,
+    target.position.lng,
+    detection.bearingDeg,
+    radialErrorM / 1000,
+  );
+  const measuredPosition = getDestinationPoint(
+    measuredRadial.lat,
+    measuredRadial.lng,
+    detection.bearingDeg + 90,
+    crossErrorM / 1000,
+  );
+  const speedErrorFraction = (deterministicUnit(`${key}:speed`) * 2 - 1)
+    * SENSOR_EVIDENCE_CONFIG.measurementSpeedErrorFraction * (1.2 - score)
+    * (radarProfile.velocityUncertaintyMultiplier ?? 1);
+  const headingErrorDeg = (deterministicUnit(`${key}:heading`) * 2 - 1)
+    * SENSOR_EVIDENCE_CONFIG.measurementHeadingErrorDeg * (1.2 - score)
+    * (radarProfile.headingUncertaintyMultiplier ?? 1);
+  const altitudeErrorM = (deterministicUnit(`${key}:altitude`) * 2 - 1)
+    * altitudeUncertaintyM;
+  const trueSpeedKmh = target.ballisticPhysics?.horizontalSpeedMps != null
+    ? target.ballisticPhysics.horizontalSpeedMps * 3.6
+    : (target.speedKmh ?? target.velocity?.speedKmh ?? 0);
+  return {
+    timestamp: simulationTime,
+    sensorId: battery.components.radar.id ?? `${battery.id}-RADAR`,
+    sourceBatteryId: battery.id,
+    targetId: target.id,
+    position: {
+      lat: measuredPosition.lat,
+      lng: measuredPosition.lng,
+      lon: measuredPosition.lng,
+      alt: Math.max(0, (target.altitudeM ?? 0) + altitudeErrorM),
+    },
+    altitudeM: Math.max(0, (target.altitudeM ?? 0) + altitudeErrorM),
+    speedKmh: Math.max(0, trueSpeedKmh * (1 + speedErrorFraction)),
+    headingDeg: ((target.heading ?? target.velocity?.heading ?? 0) + headingErrorDeg + 360) % 360,
+    verticalSpeedMps: target.verticalSpeedMps ?? target.velocity?.verticalSpeedMps ?? 0,
+    quality: score,
+    positionUncertaintyM,
+    altitudeUncertaintyM,
+    velocityUncertaintyMps: Math.max(1, trueSpeedKmh / 3.6 * Math.abs(speedErrorFraction)),
+    headingUncertaintyDeg: Math.abs(headingErrorDeg) + 0.35,
+  };
+}
 
 const createEmptySensorContact = ({ battery, target, simulationTime, thresholds }) => ({
   id: makeSensorContactKey(battery.id, target.id),
@@ -115,6 +253,8 @@ const createEmptySensorContact = ({ battery, target, simulationTime, thresholds 
   lastAltitudeBand: getAltitudeBand(target.altitudeM),
   lastAltitudeFactor: 0,
   lastHistoryFactor: 1,
+  lastDetectionScore: 0,
+  lastMeasurement: null,
   classificationConfidence: 0,
   identificationConfidence: 0,
   broadClassification: null,
@@ -148,22 +288,18 @@ export function calculateSensorEvidenceContribution({
   }
 
   const radarProfile = getRadarSensorProfile(battery);
-  const targetProfile = getTargetSensorProfile(target);
-  const rangeKm = getDistanceKm(
-    radar.lat,
-    radar.lng,
-    target.position.lat,
-    target.position.lng,
-  );
-  const rangeFactor = getRangeFactor(rangeKm, battery.radarRangeKm, radarProfile);
+  const detection = calculateRadarDetection({ battery, target });
+  const rangeKm = detection.distanceKm;
+  const rangeFactor = detection.rangeFactor;
   const altitudeBand = getAltitudeBand(target.altitudeM);
-  const altitudeFactor = radarProfile.altitudeFactors[altitudeBand] ?? 1;
+  const altitudeFactor = (radarProfile.altitudeFactors[altitudeBand] ?? 1)
+    * detection.clutterFactor;
   const memoryAnchorTime = existingContact?.lastScanTime
     ?? existingTrack?.lastUpdateTime
     ?? Number.NEGATIVE_INFINITY;
   const memoryAgeSec = simulationTime - memoryAnchorTime;
   const contactWentStale = existingContact?.confirmedBefore === true
-    && memoryAgeSec > SENSOR_EVIDENCE_CONFIG.trackCoastTimeSec;
+    && memoryAgeSec > getTrackCoastSeconds(existingContact);
   const reacquisition = (
     contactWentStale || existingTrack?.state === 'LOST'
   ) && memoryAgeSec <= SENSOR_EVIDENCE_CONFIG.reacquisitionMemorySec;
@@ -172,10 +308,10 @@ export function calculateSensorEvidenceContribution({
     ? SENSOR_EVIDENCE_CONFIG.reacquisitionContributionMultiplier
     : (knownContact ? SENSOR_EVIDENCE_CONFIG.knownContactContributionMultiplier : 1);
   const rawPerOpportunity = radarProfile.contributionPerOpportunity
-    * targetProfile.sensorSignature
-    * rangeFactor
+    * detection.detectionScore
     * altitudeFactor
-    * historyFactor;
+    * historyFactor
+    * (radarProfile.trackQualityGain ?? 1);
   const contributionPerOpportunity = Math.min(
     radarProfile.maximumContributionPerOpportunity,
     rawPerOpportunity,
@@ -184,7 +320,7 @@ export function calculateSensorEvidenceContribution({
   return {
     contribution: contributionPerOpportunity * normalizedOpportunityCount,
     contributionPerOpportunity,
-    opportunityCount: rangeFactor > 0 ? normalizedOpportunityCount : 0,
+    opportunityCount: detection.detectable ? normalizedOpportunityCount : 0,
     operational,
     rangeKm,
     rangeFactor,
@@ -192,6 +328,7 @@ export function calculateSensorEvidenceContribution({
     altitudeFactor,
     historyFactor,
     reacquisition,
+    detection,
   };
 }
 
@@ -259,10 +396,29 @@ export function applySensorScanOpportunities({
   );
   const stage = getSensorEvidenceStage(evidence, thresholds);
   const confidence = getConfidence(evidence, thresholds);
+  const radarProfile = getRadarSensorProfile(battery);
+  const calibratedConfidence = {
+    classificationConfidence: clamp01(
+      confidence.classificationConfidence * (radarProfile.classificationGain ?? 1),
+    ),
+    identificationConfidence: clamp01(
+      confidence.identificationConfidence * (radarProfile.classificationGain ?? 1),
+    ),
+  };
   const confirmedBefore = contact.confirmedBefore || stage != null;
   const targetProfile = getTargetSensorProfile(target);
+  const radarMeasurement = createRadarMeasurement({
+    battery,
+    target,
+    simulationTime,
+    sequence: contact.totalOpportunityCount + measurement.opportunityCount,
+    detection: measurement.detection,
+  });
   const nextContact = {
     ...contact,
+    expectedRevisitSec: radarProfile.scanMode === 'MECHANICAL_ROTATION'
+      ? (battery.scanRateSec ?? radarProfile.measurementIntervalSec)
+      : radarProfile.measurementIntervalSec,
     evidence,
     stage,
     confirmedBefore,
@@ -278,7 +434,9 @@ export function applySensorScanOpportunities({
     lastAltitudeBand: measurement.altitudeBand,
     lastAltitudeFactor: measurement.altitudeFactor,
     lastHistoryFactor: measurement.historyFactor,
-    ...confidence,
+    lastDetectionScore: measurement.detection.detectionScore,
+    lastMeasurement: radarMeasurement,
+    ...calibratedConfidence,
     broadClassification: (
       stage === SENSOR_EVIDENCE_STAGE.TRACKED
       || stage === SENSOR_EVIDENCE_STAGE.IDENTIFIED
@@ -292,9 +450,10 @@ export function applySensorScanOpportunities({
       targetId: target.id,
       sourceBatteryId: battery.id,
       sourceRadarId: nextContact.sourceRadarId,
+      expectedRevisitSec: nextContact.expectedRevisitSec,
       evidence,
       stage,
-      ...confidence,
+      ...calibratedConfidence,
       broadClassification: nextContact.broadClassification,
       identifiedType: stage === SENSOR_EVIDENCE_STAGE.IDENTIFIED ? target.type : null,
       identifiedModelId: stage === SENSOR_EVIDENCE_STAGE.IDENTIFIED
@@ -305,6 +464,7 @@ export function applySensorScanOpportunities({
       lastScanTime: simulationTime,
       thresholds,
       reacquisition: measurement.reacquisition,
+      measurement: radarMeasurement,
     },
     measurement,
   };
@@ -313,7 +473,7 @@ export function applySensorScanOpportunities({
 export function ageSensorEvidenceContact(contact, simulationTime, deltaTimeSec) {
   const lastActivityTime = contact.lastScanTime ?? contact.createdAt;
   const ageSec = Math.max(0, simulationTime - lastActivityTime);
-  if (ageSec <= SENSOR_EVIDENCE_CONFIG.evidenceDecayDelaySec) return contact;
+  if (ageSec <= getEvidenceDecayDelaySeconds(contact)) return contact;
 
   const withinReacquisitionMemory = contact.confirmedBefore
     && ageSec <= SENSOR_EVIDENCE_CONFIG.reacquisitionMemorySec;
@@ -367,11 +527,29 @@ export function upsertSensorEvidenceContact(contacts, nextContact) {
   return contacts.map((contact, index) => index === existingIndex ? nextContact : contact);
 }
 
+/** Pure gameplay source-quality score; no radar type receives a hard-coded priority. */
+export function scoreRadarSourceContact(contact, simulationTime) {
+  const measurement = contact?.lastMeasurement;
+  if (!measurement || contact.lastScanTime == null) return 0;
+  const age = Math.max(0, simulationTime - contact.lastScanTime);
+  const positionUncertainty = (measurement.positionUncertaintyM ?? 0)
+    + age * SENSOR_EVIDENCE_CONFIG.trackPositionUncertaintyGrowthMps;
+  const altitudeUncertainty = (measurement.altitudeUncertaintyM ?? 0)
+    + age * SENSOR_EVIDENCE_CONFIG.trackAltitudeUncertaintyGrowthMps;
+  const velocityUncertainty = (measurement.velocityUncertaintyMps ?? 0)
+    + age * SENSOR_EVIDENCE_CONFIG.trackVelocityUncertaintyGrowthMps;
+  const expectedRevisitSec = Math.max(0.25, contact.expectedRevisitSec ?? 3);
+  const freshnessPenalty = age / expectedRevisitSec;
+  return (measurement.quality ?? 0) * (0.58 + 0.42 * clamp01(contact.evidence ?? 0))
+    / (1 + positionUncertainty / 320 + altitudeUncertainty / 520
+      + velocityUncertainty / 22 + freshnessPenalty * 0.7);
+}
+
 /**
  * Fuses retained pair evidence, but emits an observation only when at least one
  * radar really scanned this target at the supplied simulation time.
  */
-export function fuseSensorEvidence({ contacts, target, simulationTime }) {
+export function fuseSensorEvidence({ contacts, target, simulationTime, existingTrack = null, activeSourceIds = null }) {
   const targetContacts = contacts.filter(contact => contact.targetId === target.id);
   const currentContacts = targetContacts.filter(contact => (
     contact.lastScanTime != null
@@ -398,17 +576,41 @@ export function fuseSensorEvidence({ contacts, target, simulationTime }) {
   const stage = getSensorEvidenceStage(evidence, thresholds);
   if (stage == null) return null;
 
-  const sourceContact = [...currentContacts].sort((first, second) => (
-    second.lastContribution - first.lastContribution
-    || second.evidence - first.evidence
-    || first.id.localeCompare(second.id)
-  ))[0];
+  const eligible = targetContacts.filter(contact => contact.lastMeasurement
+    && (!activeSourceIds || activeSourceIds.has(contact.sourceBatteryId))
+    && simulationTime - contact.lastScanTime <= getTrackCoastSeconds(contact));
+  const rankedEligible = eligible.map(contact => ({
+    contact,
+    score: scoreRadarSourceContact(contact, simulationTime),
+  })).sort((first, second) => second.score - first.score
+    || first.contact.id.localeCompare(second.contact.id));
+  const bestCandidate = rankedEligible[0] ?? null;
+  const currentCandidate = rankedEligible.find(candidate => (
+    candidate.contact.sourceRadarId === existingTrack?.sourceRadarId
+  )) ?? null;
+  // Hysteresis prevents near-equal radars alternating ownership on adjacent scans.
+  // An offline/stale owner is absent from eligible and therefore cannot block takeover.
+  const sourceCandidate = currentCandidate && bestCandidate
+    && bestCandidate.contact !== currentCandidate.contact
+    && bestCandidate.score < currentCandidate.score * RADAR_SOURCE_TAKEOVER_RATIO
+    ? currentCandidate
+    : bestCandidate;
+  const sourceContact = sourceCandidate?.contact ?? null;
+  if (!sourceContact) return null;
+  // Retaining a winner is not a new measurement: don't reset age, re-filter the
+  // same sample, or fabricate a higher update rate. Engine coasts its estimate.
+  if (!currentContacts.includes(sourceContact)) return null;
   const targetProfile = getTargetSensorProfile(target);
   const confidence = getConfidence(evidence, thresholds);
+  const contributingSensors = targetContacts
+    .filter(contact => contact.confirmedBefore || contact.stage != null)
+    .map(contact => contact.sourceRadarId)
+    .filter((sensorId, index, sensors) => sensorId && sensors.indexOf(sensorId) === index);
   return {
     targetId: target.id,
     sourceBatteryId: sourceContact.sourceBatteryId,
     sourceRadarId: sourceContact.sourceRadarId,
+    expectedRevisitSec: sourceContact.expectedRevisitSec,
     evidence,
     stage,
     ...confidence,
@@ -431,7 +633,14 @@ export function fuseSensorEvidence({ contacts, target, simulationTime }) {
     lastScanTime: simulationTime,
     thresholds,
     contributorCount: targetContacts.length,
+    contributingSensors,
+    bestSensorId: sourceContact.sourceRadarId,
+    bestSensorScore: sourceCandidate.score,
+    previousSourceScore: currentCandidate?.score ?? null,
+    sourceTakeoverRatio: RADAR_SOURCE_TAKEOVER_RATIO,
+    lastMeasurementSensorId: sourceContact.sourceRadarId,
     reacquisition: currentContacts.some(contact => contact.lastHistoryFactor > 1.1),
+    measurement: sourceContact.lastMeasurement,
   };
 }
 
@@ -445,6 +654,7 @@ export function applySensorScanBatch({
   scanOpportunities,
   simulationTime,
   existingTrack = null,
+  activeSourceIds = null,
 }) {
   let updatedContacts = contacts;
   scanOpportunities.forEach(({ battery, opportunityCount }) => {
@@ -467,11 +677,13 @@ export function applySensorScanBatch({
       contacts: updatedContacts,
       target,
       simulationTime,
+      existingTrack,
+      activeSourceIds,
     }),
   };
 }
 
 export function isTrackSensorStale(track, simulationTime) {
   if (track?.lastUpdateTime == null) return false;
-  return simulationTime - track.lastUpdateTime > SENSOR_EVIDENCE_CONFIG.trackCoastTimeSec;
+  return simulationTime - track.lastUpdateTime > getTrackCoastSeconds(track);
 }

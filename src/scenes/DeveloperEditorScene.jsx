@@ -7,6 +7,7 @@ import { getContentAsset, PACKAGED_CONTENT } from '../content/contentRegistry.js
 import { getLightAsset } from '../data/lightModeAssets.js';
 import { useContentStore } from '../store/contentStore.js';
 import { useGameStore } from '../store/gameStore.js';
+import LaunchProfileEditor from './LaunchProfileEditor.jsx';
 
 const TYPE_LABELS = Object.freeze({
   UAV: 'БПЛА', CRUISE_MISSILE: 'Крылатая ракета', BALLISTIC_MISSILE: 'Баллистическая ракета',
@@ -55,6 +56,7 @@ export default function DeveloperEditorScene() {
   const [activePanel, setActivePanel] = useState('OBJECTS');
   const [selectedAssetId, setSelectedAssetId] = useState(null);
   const [notice, setNotice] = useState('');
+  const [workspaceMode, setWorkspaceMode] = useState('SCENARIO');
   const selected = draft.objects.find(object => object.id === selectedId) ?? null;
   const selectedUserAsset = userAssets.find(asset => asset.id === selectedAssetId) ?? null;
   const templates = [...PACKAGED_CONTENT.filter(item => item.editorType && item.kind !== 'FAQ'), ...GENERIC_TEMPLATES];
@@ -97,8 +99,14 @@ export default function DeveloperEditorScene() {
     event.target.value = '';
   };
 
+  if (workspaceMode === 'LAUNCH_PROFILE') return <ContentShell eyebrow="Инструменты разработчика" title="Launch Profile Editor" actions={<>
+    <button onClick={() => setWorkspaceMode('SCENARIO')}>Редактор сценария</button><button onClick={openUiEditor}>UI Editor</button>
+  </>}>
+    <LaunchProfileEditor />
+  </ContentShell>;
+
   return <ContentShell eyebrow="Инструменты разработчика" title="Редактор сценария" actions={<>
-    <button onClick={openUiEditor}>UI Editor</button><button className="content-primary" onClick={save}>Сохранить</button>
+    <button onClick={() => setWorkspaceMode('LAUNCH_PROFILE')}>Launch Profiles</button><button onClick={openUiEditor}>UI Editor</button><button className="content-primary" onClick={save}>Сохранить</button>
   </>}>
     <div className="editor-workspace">
       <aside className="editor-palette">

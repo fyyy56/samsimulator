@@ -1,6 +1,8 @@
 import { getAltitudeBand } from '../data/airTargetProfiles.js';
 import { getBearing, getDestinationPoint, getDistanceKm } from './geo.js';
 import { getSimpleBallisticState } from './simpleBallisticProfile.js';
+import { createWorldPosition, getWorldPosition } from './worldPosition.js';
+import { advanceBallisticTarget, createBallisticPhysicsState } from './ballisticTargetPhysics.js';
 
 const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
 
@@ -28,7 +30,12 @@ export function createAirTarget(definition, spawnedAt) {
     firstWaypoint.lng,
   );
   const altitudeM = definition.altitudeM ?? 0;
-  return {
+  const worldPosition = createWorldPosition(
+    definition.spawnPosition.lat,
+    definition.spawnPosition.lng,
+    altitudeM,
+  );
+  const target = {
     id: definition.id,
     type: definition.type,
     modelId: definition.modelId ?? null,
@@ -47,9 +54,11 @@ export function createAirTarget(definition, spawnedAt) {
     sensorSignature: definition.sensorSignature ?? definition.detectability ?? 0.5,
     detectability: definition.detectability ?? definition.sensorSignature ?? 0.5,
     position: {
-      ...definition.spawnPosition,
-      lon: definition.spawnPosition.lng,
+      lat: worldPosition.lat,
+      lng: worldPosition.lng,
+      lon: worldPosition.lon,
     },
+    worldPosition,
     heading: initialHeading,
     desiredHeading: initialHeading,
     route: definition.route.map(waypoint => ({ ...waypoint })),
@@ -82,6 +91,26 @@ export function createAirTarget(definition, spawnedAt) {
       verticalSpeedMps: definition.verticalSpeedMps ?? 0,
     },
   };
+  if (definition.ballisticPhysics?.enabled && definition.type === 'BALLISTIC_TARGET') {
+    target.ballisticPhysics = createBallisticPhysicsState({
+      launchPosition: { ...definition.spawnPosition, altitudeM },
+      aimPoint: definition.ballisticPhysics.aimPoint ?? definition.destination ?? definition.route.at(-1),
+      terminalCorrection: definition.ballisticPhysics.terminalCorrection,
+      simulationTime: spawnedAt,
+    });
+    target.speedKmh = target.ballisticPhysics.totalSpeedMps * 3.6;
+    // Ballistic Physics V2 advances a constant local/rhumb course. Keep the
+    // public entity heading on that same authoritative launch solution so the
+    // first fixed tick cannot introduce a fake course correction.
+    target.heading = target.ballisticPhysics.launchHeadingDeg;
+    target.velocity = {
+      speedKmh: target.speedKmh,
+      heading: target.heading,
+      verticalSpeedMps: target.ballisticPhysics.velocityMps.vz,
+      ...target.ballisticPhysics.velocityMps,
+    };
+  }
+  return target;
 }
 
 const advanceTargetAltitude = (target, routeProgress, ballisticState, deltaTimeSec) => {
@@ -137,12 +166,16 @@ const advanceTargetAltitude = (target, routeProgress, ballisticState, deltaTimeS
 };
 
 export function advanceAirTarget(target, deltaTimeSec) {
+  if (target.ballisticPhysics?.enabled) {
+    return advanceBallisticTarget(target, deltaTimeSec);
+  }
+  const currentWorldPosition = getWorldPosition(target);
   const waypoint = target.route[target.waypointIndex];
   if (!waypoint) return { ...target, state: 'COMPLETED' };
 
   const remainingDistanceKm = getDistanceKm(
-    target.position.lat,
-    target.position.lng,
+    currentWorldPosition.lat,
+    currentWorldPosition.lng,
     waypoint.lat,
     waypoint.lng,
   );
@@ -153,8 +186,8 @@ export function advanceAirTarget(target, deltaTimeSec) {
   const travelDistanceKm = (target.speedKmh / 3600) * deltaTimeSec
     * (currentBallisticState?.horizontalSpeedFactor ?? 1);
   const desiredHeading = getBearing(
-    target.position.lat,
-    target.position.lng,
+    currentWorldPosition.lat,
+    currentWorldPosition.lng,
     waypoint.lat,
     waypoint.lng,
   );
@@ -179,10 +212,12 @@ export function advanceAirTarget(target, deltaTimeSec) {
 
   if (reachesWaypoint) {
     const reachedFinalWaypoint = target.waypointIndex >= target.route.length - 1;
+    const worldPosition = createWorldPosition(waypoint.lat, waypoint.lng, altitudeState.altitudeM);
     return {
       ...target,
       state: reachedFinalWaypoint ? 'COMPLETED' : target.state,
       position: { ...waypoint, lon: waypoint.lng },
+      worldPosition,
       ...altitudeState,
       heading,
       desiredHeading,
@@ -198,16 +233,17 @@ export function advanceAirTarget(target, deltaTimeSec) {
 
   const destinationPoint = target.type === 'BALLISTIC_TARGET'
     ? {
-      lat: target.position.lat + (waypoint.lat - target.position.lat) * (travelDistanceKm / remainingDistanceKm),
-      lng: target.position.lng + (waypoint.lng - target.position.lng) * (travelDistanceKm / remainingDistanceKm),
+      lat: currentWorldPosition.lat + (waypoint.lat - currentWorldPosition.lat) * (travelDistanceKm / remainingDistanceKm),
+      lng: currentWorldPosition.lng + (waypoint.lng - currentWorldPosition.lng) * (travelDistanceKm / remainingDistanceKm),
     }
     : getDestinationPoint(
-      target.position.lat,
-      target.position.lng,
+      currentWorldPosition.lat,
+      currentWorldPosition.lng,
       heading,
       travelDistanceKm,
     );
   const nextPosition = { ...destinationPoint, lon: destinationPoint.lng };
+  const worldPosition = createWorldPosition(nextPosition.lat, nextPosition.lng, altitudeState.altitudeM);
   const previousTrajectoryPoint = target.trajectory?.at(-1);
   const shouldAddTrajectoryPoint = !previousTrajectoryPoint || getDistanceKm(
     previousTrajectoryPoint.lat,
@@ -221,6 +257,7 @@ export function advanceAirTarget(target, deltaTimeSec) {
     desiredHeading,
     ...altitudeState,
     position: nextPosition,
+    worldPosition,
     trajectory: shouldAddTrajectoryPoint
       ? [...(target.trajectory ?? []), { ...nextPosition, altitudeM: altitudeState.altitudeM }].slice(-28)
       : target.trajectory,

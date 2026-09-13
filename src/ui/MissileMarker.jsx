@@ -48,7 +48,7 @@ function MissileMarker({ missileId }) {
   const guidanceRelation = useMemo(() => new CallbackProperty(() => {
     const state = useEngine.getState();
     const missile = state.missiles.find(candidate => candidate.id === missileId);
-    if (!missile || !['GUIDING', 'TERMINAL'].includes(missile.guidanceState)) return [];
+    if (!missile || !['MIDCOURSE', 'TERMINAL', 'REATTACK'].includes(missile.guidanceState)) return [];
     const track = state.tracks.find(candidate => candidate.id === missile.trackId);
     if (!track) return [];
     const relationDistanceKm = getDistanceKm(

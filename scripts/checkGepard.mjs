@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { SIMPLE_TARGET_TYPE } from '../src/data/airTargetProfiles.js';
 import { createAirTarget } from '../src/store/airTargetSystem.js';
 import { getGunSystemSpec } from '../src/data/gunSystems.js';
-import { useEngine } from '../src/store/engine.js';
+import { SENSOR_MODE, useEngine } from '../src/store/engine.js';
 import { getDistanceKm } from '../src/store/geo.js';
 import {
   evaluateGunEngagement,
@@ -11,6 +11,7 @@ import {
   resolveGunBurst,
 } from '../src/store/gunAirDefense.js';
 import { TRACK_STATE } from '../src/store/trackSystem.js';
+import { createWorldPosition } from '../src/store/worldPosition.js';
 
 assert.deepEqual(
   [2, 44, 89, 136, 181, 224, 271, 316, 359].map(quantizeGepardHeading),
@@ -64,7 +65,9 @@ const track = {
   lastUpdateTime: store.getState().simulationTime,
   velocity: { speedKmh: target.speedKmh, heading: target.heading },
 };
-store.setState({ airTargets: [target], tracks: [track] });
+// This check isolates gun kinematics. IDEAL prevents Radar V2 from correctly
+// degrading a hand-authored track that has no matching sensor evidence.
+store.setState({ airTargets: [target], tracks: [track], sensorMode: SENSOR_MODE.IDEAL });
 
 const engagementId = store.getState().queueEngagement(battery.id, track.id);
 assert.ok(engagementId?.startsWith('GUN-'));
@@ -194,6 +197,7 @@ store.getState().handleMapClick(48.2, 31.51);
 const outsideTarget = {
   ...makeTarget({ id: 'OUTSIDE-RADAR' }),
   position: { lat: 48.2, lng: 32.1, lon: 32.1 },
+  worldPosition: createWorldPosition(48.2, 32.1, 180),
 };
 const outsideTrack = {
   ...track,
@@ -203,7 +207,7 @@ const outsideTrack = {
   lastUpdateTime: store.getState().simulationTime,
 };
 store.setState({ airTargets: [outsideTarget], tracks: [outsideTrack] });
-store.getState().tick();
+for (let step = 0; step < 160; step += 1) store.getState().tick();
 assert.equal(store.getState().tracks[0].state, TRACK_STATE.LOST);
 
 console.log('Gepard integration checks passed.');

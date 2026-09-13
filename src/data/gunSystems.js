@@ -33,6 +33,30 @@ export const GUN_SYSTEM_SPECS = Object.freeze({
       SIMPLE_TARGET_TYPE.CRUISE_MISSILE,
     ]),
   }),
+  GAZ_DSHK: Object.freeze({
+    id: 'GAZ_DSHK',
+    displayName: 'Humvee MBG',
+    role: 'Мобильная ближняя защита от БПЛА',
+    weaponLabel: '12,7-мм пулемёт ДШК',
+    engagementRangeKm: 1.5,
+    sensorRangeKm: 4,
+    ammunitionRounds: 150,
+    roundsPerBurst: 8,
+    reactionTimeSec: 1.8,
+    burstDurationSec: 0.9,
+    burstCooldownSec: 4,
+    reloadDurationSec: 25,
+    muzzleVelocityMps: 850,
+    projectileTimeTable: Object.freeze([
+      Object.freeze({ distanceKm: 0, timeSec: 0 }),
+      Object.freeze({ distanceKm: 0.5, timeSec: 0.65 }),
+      Object.freeze({ distanceKm: 1, timeSec: 1.45 }),
+      Object.freeze({ distanceKm: 1.5, timeSec: 2.35 }),
+    ]),
+    maximumTargetSpeedKmh: 300,
+    requiredTrackQuality: 0.62,
+    permittedTargetTypes: Object.freeze([SIMPLE_TARGET_TYPE.UAV]),
+  }),
 });
 
 export const getGunSystemSpec = specId => GUN_SYSTEM_SPECS[specId] ?? null;

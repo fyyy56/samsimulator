@@ -5,6 +5,10 @@ import {
   applyAltitudeEnergyExchange,
   getEffectiveTurnPerformance,
 } from './interceptorPhysics.js';
+import {
+  measureSimulationSubsystem,
+  SIMULATION_SUBSYSTEM,
+} from './performanceMonitor.js';
 
 export const INTERCEPT_FEASIBILITY = Object.freeze({
   VALID: 'VALID',
@@ -23,7 +27,8 @@ export const INTERCEPT_SOLUTION_REASON = Object.freeze({
 
 export const INTERCEPT_FEASIBILITY_CONFIG = Object.freeze({
   solverStepSec: 0.5,
-  solverRefinementIterations: 18,
+  solverRefinementIterations: 6,
+  solverBracketGrowth: 1.8,
   courseChangePathPenaltyAt180Deg: 0.14,
   marginalMinimumTimeMarginSec: 4,
   marginalTimeMarginRatio: 0.12,
@@ -74,12 +79,21 @@ const resolveTargetState = (target, track, { includeKnownRoute = false } = {}) =
   const source = track ?? target;
   const position = asPosition(source);
   if (!position) return null;
+  const isPhysicsBallisticTarget = target?.ballisticPhysics?.enabled === true;
   return {
     position,
-    speedKmh: getTargetSpeedKmh(source) || getTargetSpeedKmh(target),
+    speedKmh: target?.ballisticPhysics?.enabled
+      ? target.ballisticPhysics.horizontalSpeedMps * 3.6
+      : (source?.reportedHorizontalSpeedKmh
+        ?? (getTargetSpeedKmh(source) || getTargetSpeedKmh(target))),
     heading: getTargetHeadingDeg(source) ?? getTargetHeadingDeg(target),
     verticalSpeedMps: getTargetVerticalSpeedMps(source) || getTargetVerticalSpeedMps(target),
-    targetAltitudeM: target?.targetAltitudeM ?? source?.targetAltitudeM ?? null,
+    // Ballistic entities update targetAltitudeM to their current altitude for
+    // rendering. Treating that value as an altitude hold made the feasibility
+    // projection freeze a descending target tens of kilometres above ground.
+    targetAltitudeM: isPhysicsBallisticTarget
+      ? null
+      : (target?.targetAltitudeM ?? source?.targetAltitudeM ?? null),
     // A fire-control solution may extrapolate only the measured course and
     // speed. Scenario waypoints remain available for strategic ETA, but are
     // not exposed to interceptor prediction as perfect future knowledge.
@@ -161,6 +175,12 @@ export function projectTargetState(targetState, durationSec) {
 }
 
 export function estimateTargetTimeAvailableSec(target, track = null) {
+  const ballisticTimeToGroundSec = target?.ballisticPhysics?.timeToGroundSec;
+  if (target?.ballisticPhysics?.enabled
+    && Number.isFinite(ballisticTimeToGroundSec)
+    && ballisticTimeToGroundSec > 0) {
+    return ballisticTimeToGroundSec;
+  }
   const state = resolveTargetState(target, track, { includeKnownRoute: true });
   if (!state || state.speedKmh <= 0 || state.route.length === 0) {
     return Number.POSITIVE_INFINITY;
@@ -346,7 +366,10 @@ const solveFlightTime = ({
     previousTimeSec = boundedSampleTimeSec;
     sampleTimeSec = Math.min(
       maximumFlightDurationSec,
-      boundedSampleTimeSec + config.solverStepSec,
+      Math.max(
+        boundedSampleTimeSec + config.solverStepSec,
+        boundedSampleTimeSec * config.solverBracketGrowth,
+      ),
     );
   }
   return null;
@@ -368,7 +391,7 @@ const invalidSolution = targetEtaSec => ({
  * supplied to use reported sensor data while `target` continues to provide the
  * known route/destination. The result never applies system-specific bans.
  */
-export function evaluateInterceptFeasibility({
+function evaluateInterceptFeasibilityImplementation({
   launcher,
   target,
   track = null,
@@ -437,19 +460,6 @@ export function evaluateInterceptFeasibility({
   const distanceTraveledKm = currentInterceptor?.distanceTraveledKm ?? 0;
   const targetAtLaunch = projectTargetState(targetState, totalLaunchDelaySec);
 
-  const staticSolution = solveFlightTime({
-    origin,
-    originAltitudeM,
-    targetState,
-    targetProjectionOffsetSec: totalLaunchDelaySec,
-    initialCourseHeading: launchCourseHeading,
-    physics,
-    initialSpeedKmh,
-    elapsedFlightTimeSec,
-    distanceTraveledKm,
-    staticTargetPosition: targetAtLaunch.position,
-    config,
-  });
   const predictedSolution = solveFlightTime({
     origin,
     originAltitudeM,
@@ -480,9 +490,7 @@ export function evaluateInterceptFeasibility({
         ? INTERCEPT_SOLUTION_REASON.TOO_LATE
         : INTERCEPT_SOLUTION_REASON.KINEMATICALLY_UNREACHABLE,
       minimumTimeToInterceptSec: theoreticalMinimumTimeSec,
-      staticTargetTimeToInterceptSec: staticSolution
-        ? totalLaunchDelaySec + staticSolution.flightTimeSec
-        : null,
+      staticTargetTimeToInterceptSec: null,
       launchDelaySec: baseLaunchDelaySec,
       rotationDelaySec,
       totalLaunchDelaySec,
@@ -495,9 +503,7 @@ export function evaluateInterceptFeasibility({
   }
 
   const predictedInterceptTimeSec = totalLaunchDelaySec + predictedSolution.flightTimeSec;
-  const staticTargetTimeToInterceptSec = staticSolution
-    ? totalLaunchDelaySec + staticSolution.flightTimeSec
-    : predictedInterceptTimeSec;
+  const staticTargetTimeToInterceptSec = predictedInterceptTimeSec;
   const minimumTimeToInterceptSec = predictedInterceptTimeSec;
   const timeMarginSec = Number.isFinite(targetEtaSec)
     ? targetEtaSec - predictedInterceptTimeSec
@@ -532,7 +538,7 @@ export function evaluateInterceptFeasibility({
     targetEtaSec,
     minimumTimeToInterceptSec,
     staticTargetTimeToInterceptSec,
-    minimumFlightTimeSec: staticSolution?.flightTimeSec ?? predictedSolution.flightTimeSec,
+    minimumFlightTimeSec: predictedSolution.flightTimeSec,
     predictedInterceptTimeSec,
     interceptorFlightTimeSec: predictedSolution.flightTimeSec,
     predictedInterceptPoint: {
@@ -545,6 +551,7 @@ export function evaluateInterceptFeasibility({
       lng: predictedSolution.targetProjection.position.lng,
       altitudeM: predictedSolution.targetProjection.position.altitudeM,
     },
+    launchCourseHeadingDeg: launchCourseHeading,
     interceptBearingDeg: predictedSolution.interceptBearing,
     requiredCourseChangeDeg: predictedSolution.requiredCourseChangeDeg,
     interceptDistanceKm: predictedSolution.directDistanceKm,
@@ -559,6 +566,13 @@ export function evaluateInterceptFeasibility({
     rangeReserveRatio,
     energyReserveRatio,
   };
+}
+
+export function evaluateInterceptFeasibility(options) {
+  return measureSimulationSubsystem(
+    SIMULATION_SUBSYSTEM.INTERCEPT_SOLVER,
+    () => evaluateInterceptFeasibilityImplementation(options),
+  );
 }
 
 export const calculateInterceptSolution = evaluateInterceptFeasibility;

@@ -1,4 +1,5 @@
 import { getBearing, getDistanceKm } from './geo.js';
+import { SENSOR_PHYSICS_CONFIG } from '../data/sensorDetectionProfiles.js';
 
 export const DEFAULT_RADAR_BEAM_WIDTH_DEG = 6;
 export const RADAR_SCAN_TYPE = Object.freeze({
@@ -66,8 +67,26 @@ export function advanceRadarScan(scanState, deltaTimeSec, sector, heading) {
 }
 
 export function isTargetInRadarCoverage(battery, target) {
+  return getRadarGeometry(battery, target).insideNominalCoverage;
+}
+
+export function calculateRadioHorizonKm(radarHeightM, targetHeightM) {
+  const radarHeight = Math.max(0, radarHeightM ?? SENSOR_PHYSICS_CONFIG.defaultRadarHeightM);
+  const targetHeight = Math.max(0, targetHeightM ?? 0);
+  return SENSOR_PHYSICS_CONFIG.radioHorizonCoefficient
+    * (Math.sqrt(radarHeight) + Math.sqrt(targetHeight));
+}
+
+export function getRadarGeometry(battery, target, radarProfile = null) {
   const radar = battery.components.radar;
-  if (!radar) return false;
+  if (!radar || !target?.position) return {
+    insideNominalCoverage: false,
+    insideSector: false,
+    hasLineOfSight: false,
+    distanceKm: Number.POSITIVE_INFINITY,
+    radioHorizonKm: 0,
+    bearingDeg: 0,
+  };
 
   const distanceKm = getDistanceKm(
     target.position.lat,
@@ -75,11 +94,24 @@ export function isTargetInRadarCoverage(battery, target) {
     radar.lat,
     radar.lng,
   );
-  if (distanceKm > battery.radarRangeKm) return false;
-  if (battery.radarSector >= 360) return true;
-
   const bearing = getBearing(radar.lat, radar.lng, target.position.lat, target.position.lng);
-  return getSectorDifference(bearing, battery.radarHeading) <= battery.radarSector / 2;
+  const insideSector = battery.radarSector >= 360
+    || getSectorDifference(bearing, battery.radarHeading) <= battery.radarSector / 2 + 1e-6;
+  const radarHeightM = radar.antennaHeightM
+    ?? radarProfile?.antennaHeightM
+    ?? SENSOR_PHYSICS_CONFIG.defaultRadarHeightM;
+  const targetHeightM = target.altitudeM ?? target.position.altitudeM ?? target.position.alt ?? 0;
+  const radioHorizonKm = calculateRadioHorizonKm(radarHeightM, targetHeightM);
+  return {
+    insideNominalCoverage: distanceKm <= battery.radarRangeKm && insideSector,
+    insideSector,
+    hasLineOfSight: distanceKm <= radioHorizonKm,
+    distanceKm,
+    radioHorizonKm,
+    bearingDeg: bearing,
+    radarHeightM,
+    targetHeightM,
+  };
 }
 
 const countPhaseCrossings = (startPhase, endPhase, crossingOffset) => (
@@ -91,10 +123,11 @@ const getElectronicScheduleOffset = (targetId) => {
   return ((numericSequence * 0.2) % 1 + 1) % 1;
 };
 
-export function countRadarMeasurements(battery, target) {
+export function countRadarMeasurements(battery, target, radarProfile = null) {
   const radar = battery.components.radar;
   const scanState = radar?.scanState;
-  if (!radar || !scanState || !isTargetInRadarCoverage(battery, target)) return 0;
+  const geometry = getRadarGeometry(battery, target, radarProfile);
+  if (!radar || !scanState || !geometry.insideNominalCoverage || !geometry.hasLineOfSight) return 0;
 
   const bearing = getBearing(radar.lat, radar.lng, target.position.lat, target.position.lng);
   const halfBeamWidth = scanState.beamWidthDeg / 2;
@@ -127,6 +160,25 @@ export function countRadarMeasurements(battery, target) {
   ), 0);
 }
 
+export function getNetworkRadarScanOpportunities(batteries, target, getProfile = null) {
+  return batteries.flatMap(battery => {
+    const radarProfile = getProfile?.(battery) ?? null;
+    const opportunityCount = countRadarMeasurements(battery, target, radarProfile);
+    if (opportunityCount <= 0) return [];
+    const geometry = getRadarGeometry(battery, target, radarProfile);
+    return [{
+      battery,
+      opportunityCount,
+      geometry,
+      score: opportunityCount * 10
+        + (battery.radarScanType === RADAR_SCAN_TYPE.ELECTRONIC_SECTOR ? 4 : 0)
+        + (1 - geometry.distanceKm / Math.max(1, battery.radarRangeKm)),
+    }];
+  }).sort((first, second) => second.score - first.score
+    || first.battery.id.localeCompare(second.battery.id))
+    .slice(0, SENSOR_PHYSICS_CONFIG.maximumFusedSensors);
+}
+
 /**
  * Selects one radar as the network measurement owner for a target. Once a
  * Track has a valid source, other radars consume the shared C2 Track instead
@@ -140,31 +192,27 @@ export function selectNetworkRadarScanOpportunity(
   const preferredBattery = preferredSourceBatteryId
     ? batteries.find(battery => battery.id === preferredSourceBatteryId)
     : null;
-  const candidates = batteries.flatMap(battery => {
-    const opportunityCount = countRadarMeasurements(battery, target);
-    if (opportunityCount <= 0) return [];
-    const radar = battery.components.radar;
-    const distanceKm = getDistanceKm(radar.lat, radar.lng, target.position.lat, target.position.lng);
-    const normalizedRange = distanceKm / Math.max(1, battery.radarRangeKm);
-    const score = opportunityCount * 10
-      + (battery.radarScanType === RADAR_SCAN_TYPE.ELECTRONIC_SECTOR ? 4 : 0)
-      + (1 - normalizedRange);
-    return [{ battery, opportunityCount, score, normalizedRange }];
-  });
+  // The fused-candidate list is intentionally capped for performance. Check
+  // the current Track owner before applying that cap; otherwise a healthy
+  // fourth radar can disappear from the candidate list and force an invalid
+  // handoff/null measurement every sweep.
+  if (preferredBattery && getRadarGeometry(preferredBattery, target).hasLineOfSight
+    && isTargetInRadarCoverage(preferredBattery, target)) {
+    const preferredOpportunityCount = countRadarMeasurements(preferredBattery, target);
+    if (preferredOpportunityCount > 0) {
+      return { battery: preferredBattery, opportunityCount: preferredOpportunityCount };
+    }
+  }
+  const candidates = getNetworkRadarScanOpportunities(batteries, target).map(candidate => ({
+    ...candidate,
+    normalizedRange: candidate.geometry.distanceKm / Math.max(1, candidate.battery.radarRangeKm),
+  }));
   const selectedOpportunity = candidates.sort((first, second) => (
     second.score - first.score || first.battery.id.localeCompare(second.battery.id)
   ))[0] ?? null;
 
-  if (preferredBattery && isTargetInRadarCoverage(preferredBattery, target)) {
-    const preferredOpportunity = candidates.find(candidate => (
-      candidate.battery.id === preferredBattery.id
-    ));
-    if (preferredOpportunity) {
-      return {
-        battery: preferredOpportunity.battery,
-        opportunityCount: preferredOpportunity.opportunityCount,
-      };
-    }
+  if (preferredBattery && getRadarGeometry(preferredBattery, target).hasLineOfSight
+    && isTargetInRadarCoverage(preferredBattery, target)) {
     if (!selectedOpportunity) return null;
     const preferredRadar = preferredBattery.components.radar;
     const preferredDistanceKm = getDistanceKm(

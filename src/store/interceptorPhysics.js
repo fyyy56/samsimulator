@@ -176,9 +176,17 @@ export function advanceInterceptorFlight(
     interceptor.flightTime,
     nextFlightTime,
   );
+  const initialLaunchAccelerationMps2 = interceptor.flightTime
+    < (interceptor.initialAccelerationDurationSec ?? 0)
+    ? (interceptor.initialLaunchAccelerationMps2 ?? 0)
+    : 0;
+  const effectiveAccelerationMps2 = Math.max(
+    motorAccelerationMps2,
+    initialLaunchAccelerationMps2,
+  );
   const speedAfterThrustMps = Math.min(
     physics.maxSpeedMps,
-    currentSpeedMps + motorAccelerationMps2 * deltaTimeSec,
+    currentSpeedMps + effectiveAccelerationMps2 * deltaTimeSec,
   );
   const densityMultiplier = getAirDensityMultiplier(altitudeM);
   const dragRatePerMeter = physics.dragCoefficientGame
@@ -225,7 +233,7 @@ export function advanceInterceptorFlight(
     distanceTraveledKm,
     travelDistanceKm,
     densityMultiplier,
-    motorAccelerationMps2,
+    motorAccelerationMps2: effectiveAccelerationMps2,
     dragDecelerationMps2: deltaTimeSec > 0 ? dragLossMps / deltaTimeSec : 0,
     turnLossMps2: deltaTimeSec > 0 ? turnLossMps / deltaTimeSec : 0,
     headingCorrectionDeg,

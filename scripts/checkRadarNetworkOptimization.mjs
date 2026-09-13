@@ -40,6 +40,7 @@ const targets = Array.from({ length: 100 }, (_, index) => ({
     lat: 49 + (index % 10) * 0.03,
     lng: 30.3 + Math.floor(index / 10) * 0.025,
   },
+  altitudeM: 10_000,
 }));
 
 const legacyPairUpdates = targets.reduce((total, target) => (

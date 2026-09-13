@@ -171,7 +171,7 @@ const closeLowUav = makeSensorTarget({
 const farLowUav = makeSensorTarget({
   id: 'FAR-UAV',
   type: SIMPLE_TARGET_TYPE.UAV,
-  lng: 32.2,
+  lng: 31.45,
   altitudeM: 120,
 });
 const closeCruise = makeSensorTarget({
@@ -202,7 +202,7 @@ const reacquired = applySensorScanOpportunities({
   existingTrack: { state: TRACK_STATE.LOST, lastUpdateTime: trackedUav.contact.lastScanTime },
 });
 assert.ok(reacquired.observation, 'Recent LOST contact was not reacquired on the next scan');
-assert.equal(getTargetSensorProfile({ type: 'UNKNOWN' }).sensorSignature, 0.58);
+assert.equal(getTargetSensorProfile({ type: 'UNKNOWN' }).radarSignature, 0.58);
 
 console.log(JSON.stringify({
   checkedTargetCount,
