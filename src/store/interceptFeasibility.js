@@ -21,6 +21,7 @@ export const INTERCEPT_SOLUTION_REASON = Object.freeze({
   NARROW_MARGIN: 'NARROW_MARGIN',
   TOO_LATE: 'TOO_LATE',
   KINEMATICALLY_UNREACHABLE: 'KINEMATICALLY_UNREACHABLE',
+  MINIMUM_RANGE: 'MINIMUM_RANGE',
   NO_OPERATIONAL_LAUNCHER: 'NO_OPERATIONAL_LAUNCHER',
   INVALID_INPUT: 'INVALID_INPUT',
 });
@@ -409,6 +410,11 @@ function evaluateInterceptFeasibilityImplementation({
     ?? estimateTargetTimeAvailableSec(target, track);
   if (!origin || !targetState || !physics || targetState.speedKmh < 0) {
     return invalidSolution(targetEtaSec);
+  }
+  if (!currentInterceptor && physics.minGameRangeKm > 0
+    && getSlantDistanceKm(origin, origin.altitudeM,
+      targetState.position, targetState.position.altitudeM) < physics.minGameRangeKm) {
+    return { ...invalidSolution(targetEtaSec), reason: INTERCEPT_SOLUTION_REASON.MINIMUM_RANGE };
   }
 
   const config = { ...INTERCEPT_FEASIBILITY_CONFIG, ...configOverrides };

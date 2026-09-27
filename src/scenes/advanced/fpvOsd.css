@@ -56,14 +56,62 @@
   font: 700 9px/1 ui-monospace, monospace; cursor: pointer;
 }
 .fpv-osd__signal-lost {
-  position: absolute; inset: 0; display: grid; place-content: center; text-align: center;
-  background: rgba(0,0,0,.38); animation: fpv-signal-drop .18s steps(2,end) infinite;
+  position: absolute; inset: 0; overflow: hidden; display: grid; place-content: center;
+  text-align: center; background: rgba(0,0,0,.78); isolation: isolate;
+  animation: fpv-signal-collapse 2.3s steps(1,end) both;
 }
-.fpv-osd__signal-lost strong { font-size: clamp(28px,5vw,72px); letter-spacing: .09em; }
-.fpv-osd__signal-lost small { display: block; margin-top: 8px; font-size: 11px; }
-.is-signal-lost .advanced-fpv-grain { opacity: .45; animation-duration: .08s; }
-.is-signal-lost .advanced-fpv-feed::after { opacity: .7; animation-duration: .18s; }
-@keyframes fpv-signal-drop { 50% { transform: translateX(2px); filter: contrast(1.4); } }
+.fpv-osd__signal-lost::before {
+  content: ''; position: absolute; inset: -25%; z-index: -2; opacity: .9;
+  background:
+    repeating-radial-gradient(circle at 37% 43%, #fff 0 1px, #000 1px 3px, transparent 3px 5px),
+    repeating-linear-gradient(89deg, rgba(255,255,255,.35) 0 1px, #000 1px 4px);
+  background-size: 7px 5px, 11px 100%; mix-blend-mode: screen;
+  animation: fpv-signal-static .065s steps(2,end) infinite;
+}
+.fpv-osd__signal-lost::after {
+  content: ''; position: absolute; inset: 0; z-index: -1;
+  background: repeating-linear-gradient(0deg, transparent 0 18px,
+    rgba(255,255,255,.18) 19px 22px, rgba(0,0,0,.8) 23px 31px);
+  animation: fpv-signal-bands .17s steps(3,end) infinite;
+}
+.fpv-osd__signal-lost > span { opacity: 0; color: #ff2c24;
+  font-family: 'Courier New', monospace; font-weight: 900; text-shadow: 3px 0 #290000;
+  animation: fpv-signal-caption 2.3s steps(1,end) both; }
+.fpv-osd__signal-lost strong { display: block; font-size: clamp(28px,5vw,72px);
+  letter-spacing: .075em; transform: scaleX(.88); }
+.fpv-osd__signal-lost small { display: block; margin-top: 7px; color: #e84b42;
+  font-size: 10px; letter-spacing: .08em; }
+.fpv-osd__signal-smear { position: absolute; inset: 0; z-index: -1;
+  background: repeating-linear-gradient(0deg, transparent 0 42px,
+    rgba(238,255,246,.28) 43px 51px, transparent 52px 76px);
+  filter: blur(6px); animation: fpv-signal-smear .24s steps(3,end) 2 both; }
+.fpv-osd__signal-fragments { position: absolute; inset: 7% 3%; z-index: -1;
+  background: linear-gradient(90deg, transparent 0 8%, rgba(190,210,200,.4) 8% 29%,
+    transparent 29% 53%, rgba(255,255,255,.28) 53% 81%, transparent 81%);
+  clip-path: polygon(0 9%,100% 4%,100% 17%,0 24%,0 51%,100% 43%,100% 61%,0 69%,0 88%,100% 81%,100% 95%,0 100%);
+  opacity: 0; animation: fpv-signal-fragments 2.3s steps(1,end) both;
+}
+.is-signal-lost .advanced-fpv-grain { opacity: .8; animation-duration: .045s; }
+.is-signal-lost .advanced-fpv-feed::after { opacity: .86; animation-duration: .11s; }
+.is-signal-lost .fpv-osd > :not(.fpv-osd__signal-lost) { opacity: .22; filter: blur(1px); }
+@keyframes fpv-signal-collapse {
+  0% { background: rgba(0,0,0,.05); transform: translateX(0); }
+  10% { background: rgba(0,0,0,.14); transform: translateX(7px) skewX(1deg); }
+  22% { background: rgba(0,0,0,.48); transform: translateX(-4px); }
+  42%, 100% { background: rgba(0,0,0,.78); transform: none; }
+}
+@keyframes fpv-signal-static { 0% { transform: translate(0,0); }
+  50% { transform: translate(-3%,2%); } 100% { transform: translate(2%,-3%); } }
+@keyframes fpv-signal-bands { 0% { transform: translateY(-12%); }
+  50% { transform: translateY(9%); } 100% { transform: translateY(-4%); } }
+@keyframes fpv-signal-smear { 0% { transform: translateX(-18%) scaleX(1.4); opacity: 0; }
+  35% { opacity: 1; } 100% { transform: translateX(22%) scaleX(1.9); opacity: 0; } }
+@keyframes fpv-signal-fragments { 0%, 37% { opacity: 0; transform: translateX(0); }
+  38%, 62% { opacity: .7; transform: translateX(-3%); } 63%, 100% { opacity: .3; transform: translateX(2%); } }
+@keyframes fpv-signal-caption { 0%, 43% { opacity: 0; }
+  44%, 52% { opacity: 1; transform: translateX(3px); }
+  53%, 60% { opacity: .35; transform: translateX(-2px); }
+  61%, 100% { opacity: 1; transform: none; } }
 @media (max-width: 700px), (max-height: 550px) {
   .fpv-osd__map { right: 3%; bottom: 14%; width: 125px; }
   .fpv-osd__map svg { max-height: 80px; }

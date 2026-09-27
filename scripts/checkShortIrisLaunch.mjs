@@ -116,10 +116,12 @@ assert.ok(
   Math.abs(headingDelta(firstMissile.heading, expectedInitialBearing)) < 1,
   'IRIS-T initial post-launch course must point toward the predicted intercept area',
 );
-assert.ok(minimumTargetDistanceKm < 0.2, 'IRIS-T must close on a nearby target instead of flying away');
+assert.ok(minimumTargetDistanceKm < 0.2,
+  `IRIS-T must close on a nearby target instead of flying away (${minimumTargetDistanceKm.toFixed(3)} km)`);
 assert.equal(pitchOverObserved, true, 'IRIS-T must transition through PITCH_OVER');
 assert.equal(guidanceObserved, true, 'IRIS-T must enter normal GUIDANCE after pitch-over');
-assert.equal(visualImpactObserved, true, 'Accepted intercept must visually place IRIS-T on the target');
+assert.equal(visualImpactObserved, true,
+  `Accepted intercept must visually place IRIS-T on the target (closest ${minimumTargetDistanceKm.toFixed(3)} km)`);
 assert.ok(seekerStates.has('SEARCH'), 'IRIS-T seeker must enter SEARCH');
 assert.ok(seekerStates.has('ACQUIRED'), 'IRIS-T seeker must acquire its assigned target');
 assert.ok(seekerStates.has('TERMINAL'), 'IRIS-T seeker must confirm terminal lock');

@@ -20,9 +20,27 @@ export function getOperationalLaunchers(battery) {
   return battery?.components?.launchers?.filter(launcher => launcher.operational !== false) ?? [];
 }
 
+// The canonical Track retains its last measured/coasted radar point. Older
+// scenario fixtures omit source metadata; the ideal sensor explicitly marks
+// its synthetic source and must never authorize a manual radar-cued launch.
+export const hasRadarTrackPoint = track => Boolean(track
+  && Number.isFinite(track.lastUpdateTime)
+  && Number.isFinite(track.reportedPosition?.lat)
+  && Number.isFinite(track.reportedPosition?.lng)
+  && !track.sourceRadarId?.endsWith('-IDEAL'));
+
+export const canManualLaunch = (battery, track) => Boolean(battery
+  && battery.controlMode === 'MANUAL'
+  && battery.weaponType !== 'GUN_AA'
+  && battery.operational !== false
+  && battery.status !== 'DESTROYED'
+  && battery.missilesLeft > 0
+  && getOperationalLaunchers(battery).length > 0
+  && hasRadarTrackPoint(track));
+
 export function getBatteryEngagementStatus(battery, track, target = null) {
-  if (!track || track.state === TRACK_STATE.LOST) return ENGAGEMENT_STATUS.NO_TRACK;
   if (battery.missilesLeft <= 0) return ENGAGEMENT_STATUS.NO_AMMO;
+  if (!track || track.state === TRACK_STATE.LOST) return ENGAGEMENT_STATUS.NO_TRACK;
   if (!battery.components.radar || !selectBestLauncher(battery, track)) {
     return ENGAGEMENT_STATUS.NO_TRACK;
   }
@@ -50,7 +68,9 @@ export function getBatteryEngagementStatus(battery, track, target = null) {
   if (target) {
     const solution = evaluateBatteryInterceptFeasibility({ battery, track, target });
     if (solution.status === INTERCEPT_FEASIBILITY.NO_SOLUTION) {
-      return solution.reason === INTERCEPT_SOLUTION_REASON.TOO_LATE
+      return solution.reason === INTERCEPT_SOLUTION_REASON.MINIMUM_RANGE
+        ? ENGAGEMENT_STATUS.OUT_OF_RANGE
+        : solution.reason === INTERCEPT_SOLUTION_REASON.TOO_LATE
         ? ENGAGEMENT_STATUS.TOO_LATE
         : ENGAGEMENT_STATUS.NO_INTERCEPT_SOLUTION;
     }

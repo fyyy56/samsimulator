@@ -24,7 +24,7 @@ const estimateTimeToGroundSec = (altitudeM, verticalSpeedMps) => {
 
 export function createTrackDataView(track, simulationTime) {
   if (!track?.reportedPosition) return null;
-  const estimatedVelocity = track.velocity ?? {
+  const estimatedVelocity = {
     speedKmh: track.reportedSpeedKmh,
     heading: track.reportedHeading,
     verticalSpeedMps: track.reportedVerticalSpeedMps,

@@ -13,6 +13,7 @@ import {
   ImageryLayer,
   LabelStyle,
   Matrix3,
+  Matrix4,
   Math as CesiumMath,
   NearFarScalar,
   PolygonHierarchy,
@@ -33,29 +34,32 @@ import {
   setPerformanceMonitoringEnabled,
 } from '../store/performanceMonitor.js';
 import { PRESENTATION_MODE, UI_LANGUAGE, useGameStore } from '../store/gameStore.js';
+import { localizeTechnicalTerm } from '../data/uiLocalization.js';
+import { BATTERY_CONTROL_MODE } from '../store/autoDefense.js';
 import {
   ADVANCED_ENTITY_KIND,
   getAdvancedControllablePresentation,
   getAdvancedInterceptorPresentation,
   getAdvancedSearchRadarPresentation,
   getAdvancedTargetPresentation,
+  resolveAdvancedAssetPresentation,
 } from '../data/advanced3dRegistry.js';
 import {
   CONTROLLABLE_AIR_ENTITY_TYPE,
   CONTROLLABLE_CAMERA_MODE,
+  CONTROLLABLE_CONTROL_MODE,
 } from '../store/controllableAirEntity.js';
 import { getControllableAirProfile } from '../data/controllableAirProfiles.js';
 import { getThermalProfile, thermalLuminance } from '../data/thermalProfiles.js';
 import { isAvailableNetworkTrack } from '../store/trackDataProvider.js';
 import { THROTTLE_ASSIST_MODE, useManualControlStore } from '../store/manualControlStore.js';
-import { getInterceptorSpec } from '../data/interceptors.js';
 import { getSeekerProfile, SEEKER_STATE } from '../data/seekerProfiles.js';
 import { getTargetDisplayName } from '../data/lightModeAssets.js';
 import { getBearing, getDestinationPoint, getDistanceKm } from '../store/geo.js';
 import {
-  INTERCEPT_EFFECT_VISUAL_PROFILE,
   MISSILE_TRAIL_VISUAL_PROFILE,
   getMissilePlumeProfile,
+  getMissileSmokeProfile,
 } from '../data/visualEffectProfiles.js';
 import {
   ADVANCED_CAMERA_MODE as CAMERA_MODE,
@@ -75,12 +79,24 @@ import OlsHud from './advanced/OlsHud.jsx';
 import { createOlsCameraController } from './advanced/OlsCameraController.js';
 import { useOlsViewStore } from '../store/olsViewStore.js';
 import AdvancedOverlayMenu from './advanced/AdvancedOverlayMenu.jsx';
+import EnvironmentControls from './advanced/EnvironmentControls.jsx';
+import { createAdvancedEnvironment } from './advanced/advancedEnvironment.js';
+import { useEnvironmentSettings } from './advanced/environmentSettings.js';
+import { effectiveAdvancedOverlays, compactWorldLabel, createLabelLayout } from './advanced/advancedPresentation.js';
+import './advanced/advancedPresentation.css';
+import AdvancedSessionPanel from './advanced/AdvancedSessionPanel.jsx';
+import AdvancedFireControl from './advanced/AdvancedFireControl.jsx';
+import MissileLog from './advanced/MissileLog.jsx';
+import GroundPlacement, { GroundObjectList } from './advanced/GroundPlacement.jsx';
+import { groundObjects } from './advanced/groundPlacement.js';
+import { createColdLaunchVfx } from './advanced/coldLaunchVfx.js';
+import { createAsterBoosterDebris, updateAsterBoosterDebris } from './advanced/asterBoosterDebris.js';
+import { createImpactVfx } from './advanced/impactVfx.js';
 import { sampleTrackPresentation, withTrackPresentation } from '../ui/trackPresentation.js';
 import { captureImpactAwareSnapshot } from './advanced/impactPresentation.js';
 import { getAssistTargetSpeedMps, updateAssistedThrottle } from './advanced/fpvThrottleAssist.js';
 import {
   formatTrackCesiumLabel,
-  formatTrackLabelData,
 } from '../ui/trackLabelFormatting.js';
 
 const TRAIL_SAMPLE_INTERVAL_MS = 125;
@@ -94,16 +110,21 @@ const formatFlightTime = seconds => {
   const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, '0');
   return `${minutes}:${(totalSeconds % 60).toString().padStart(2, '0')}`;
 };
-const POST_INTERCEPT_HOLD_MS = 1_650;
-const INTERCEPT_EFFECT_DURATION_MS = INTERCEPT_EFFECT_VISUAL_PROFILE.totalDurationMs;
+const POST_INTERCEPT_HOLD_MS = 3_400;
 // Debug geometry is intentionally bounded. This is a presentation limit only;
 // seeker activation and lock ranges remain owned by the gameplay profiles.
 const SEEKER_VISUAL_DEBUG_RANGE_M = 20_000;
 const SEEKER_ORIGIN_FORWARD_OFFSET = 0.48;
 const ADVANCED_VISUAL_MODE = Object.freeze({
-  VISUAL: 'VISUAL',
+  DAY: 'DAY',
+  LOW_LIGHT: 'LOW-LIGHT',
   THERMAL: 'THERMAL',
 });
+
+const cycleVisualMode = current => {
+  const modes = Object.values(ADVANCED_VISUAL_MODE);
+  return modes[(modes.indexOf(current) + 1) % modes.length];
+};
 
 const getEntityPosition = entity => {
   const source = entity.components?.radar ?? entity;
@@ -160,6 +181,12 @@ const getKinematics = entity => {
       : Math.atan2(velocity.upMps, Math.max(horizontalSpeedMps, 0.001)) * 180 / Math.PI,
     rollDeg: entity.roll ?? 0,
     angularRatesDegPerSec: entity.angularVelocity ?? null,
+    coldLaunchPhase: entity.coldLaunchPhase,
+    attitudeJetsIntensity: entity.attitudeJetsIntensity,
+    attitudeCorrectionDeg: entity.attitudeCorrectionDeg,
+    motorPhase: entity.motorPhase,
+    flightTime: entity.flightTime,
+
   };
 };
 
@@ -181,33 +208,41 @@ const parseSelectionKey = key => {
 };
 
 function AdvancedToolbar({ cameraMode, setCameraMode, resetCamera, returnToCommand,
-  spawnTestEntity, controllableSelected, visualMode, setVisualMode, ru }) {
+  openOls, spawnTestEntity, controllableSelected, visualMode, setVisualMode, ru,
+  engineeringEnabled, sandboxMode }) {
+  const tr = term => localizeTechnicalTerm(term, ru ? 'RU' : 'EN');
+  const fireMode = useEngine(state => state.globalControlMode);
   const modes = controllableSelected
     ? [CAMERA_MODE.THIRD_PERSON, CAMERA_MODE.FIRST_PERSON, CAMERA_MODE.FPV]
     : [CAMERA_MODE.FREE, CAMERA_MODE.FOLLOW, CAMERA_MODE.SIDE, CAMERA_MODE.TACTICAL];
-  return <div className="advanced-toolbar">
-    <button onClick={returnToCommand}>← COMMAND</button>
+  return <div className="advanced-toolbar map-toolbar">
+    <button className="map-toolbar__button" onClick={returnToCommand}>← {ru ? 'МЕНЮ' : 'MENU'}</button>
     {modes.map(mode => (
-      <button key={mode} className={cameraMode === mode ? 'is-active' : ''}
-        onClick={() => setCameraMode(mode)}>{mode}</button>
+      <button key={mode} className={`map-toolbar__button${cameraMode === mode ? ' is-active' : ''}`}
+        onClick={() => setCameraMode(mode)}>{tr(mode)}</button>
     ))}
     {cameraMode !== CAMERA_MODE.FREE && (
-      <button onClick={resetCamera}>{ru ? 'СБРОС ВИДА' : 'RESET VIEW'}</button>
+      <button className="map-toolbar__button" onClick={resetCamera}>{ru ? 'СБРОС ВИДА' : 'RESET VIEW'}</button>
     )}
-    <button className={visualMode === ADVANCED_VISUAL_MODE.THERMAL ? 'is-active' : ''}
-      onClick={() => setVisualMode(current => current === ADVANCED_VISUAL_MODE.VISUAL
-        ? ADVANCED_VISUAL_MODE.THERMAL : ADVANCED_VISUAL_MODE.VISUAL)}>
-      {visualMode}
-    </button>
-    <button onClick={spawnTestEntity}>{ru ? 'СОЗДАТЬ TEST FPV' : 'SPAWN TEST FPV'}</button>
-    <span>{ru ? '3D-ПРОСМОТР · ОБЩАЯ СИМУЛЯЦИЯ' : '3D PREVIEW · SHARED SIMULATION'}</span>
+    {Object.values(ADVANCED_VISUAL_MODE).map(mode => (
+      <button key={mode} className={`map-toolbar__button${visualMode === mode ? ' is-active' : ''}`}
+        aria-pressed={visualMode === mode} onClick={() => setVisualMode(mode)}>{tr(mode)}</button>
+    ))}
+    <button className="map-toolbar__button" onClick={openOls}>OLS</button>
+    <span>{tr('FIRE')}</span>
+    {['AUTO', 'MANUAL'].map(mode => <button key={mode}
+      className={`map-toolbar__button${fireMode === mode ? ' is-active' : ''}`}
+      aria-pressed={fireMode === mode}
+      onClick={() => useEngine.getState().setAllBatteriesControlMode(mode)}>{tr(mode)}</button>)}
+    {engineeringEnabled && <button className="map-toolbar__button" onClick={spawnTestEntity}>{ru ? 'СОЗДАТЬ TEST FPV' : 'SPAWN TEST FPV'}</button>}
+    <span>{tr(sandboxMode ? '3D SANDBOX' : 'ADVANCED 3D')}</span>
   </div>;
 }
 
 function AdvancedTimeControls({ timeScale, setTimeScale, ru }) {
   return <div className="advanced-time-controls" aria-label={ru ? 'Управление временем' : 'Time controls'}>
-    {[0, 1, 2, 5, 10, 20].map(speed => (
-      <button key={speed} className={timeScale === speed ? 'is-active' : ''}
+    {[0, 0.5, 1, 2, 5, 10, 20].map(speed => (
+      <button key={speed} className={`map-toolbar__button${timeScale === speed ? ' is-active' : ''}`}
         onClick={() => setTimeScale(speed)}>
         {speed === 0 ? (ru ? 'ПАУЗА' : 'PAUSE') : `${speed}x`}
       </button>
@@ -215,11 +250,12 @@ function AdvancedTimeControls({ timeScale, setTimeScale, ru }) {
   </div>;
 }
 
-function EntityList({ snapshot, selectedKey, onSelect, ru }) {
-  return <aside className="advanced-entity-list">
-    <header>{ru ? 'ОБЪЕКТЫ' : 'ENTITIES'}<small>{snapshot.targets.length
-      + snapshot.missiles.length + snapshot.searchRadars.length
-      + snapshot.controllables.length}</small></header>
+function EntityList({ snapshot, selectedKey, onSelect, ru, groundSelected, onGroundSelect }) {
+  const groundCount = useEngine(state => groundObjects(state).length);
+  return <details className="advanced-entity-list hud-rail">
+    <summary>{ru ? 'ОБЪЕКТЫ' : 'ENTITIES'}<small>{snapshot.targets.length
+      + snapshot.missiles.length + groundCount
+      + snapshot.controllables.length}</small></summary>
     {snapshot.controllables.length > 0 && <section>
       <h3>{ru ? 'УПРАВЛЯЕМЫЕ' : 'CONTROLLABLE'} <b>{snapshot.controllables.length}</b></h3>
       {snapshot.controllables.map(entity => {
@@ -230,15 +266,7 @@ function EntityList({ snapshot, selectedKey, onSelect, ru }) {
         </button>;
       })}
     </section>}
-    {snapshot.searchRadars.length > 0 && <section>
-      <h3>{ru ? 'ОБЗОРНЫЕ РЛС' : 'SEARCH RADARS'} <b>{snapshot.searchRadars.length}</b></h3>
-      {snapshot.searchRadars.map(entity => {
-        const key = makeSelectionKey(ADVANCED_ENTITY_KIND.SEARCH_RADAR, entity.id);
-        return <button key={key} className={selectedKey === key ? 'is-active' : ''} onClick={() => onSelect(key)}>
-          <span>{entity.displayName}</span><small>{entity.id} · {entity.status}</small>
-        </button>;
-      })}
-    </section>}
+    <GroundObjectList selected={groundSelected} onSelect={onGroundSelect} ru={ru} />
     <section>
       <h3>{ru ? 'ЦЕЛИ' : 'TARGETS'} <b>{snapshot.targets.length}</b></h3>
       {snapshot.targets.map(entity => {
@@ -259,7 +287,7 @@ function EntityList({ snapshot, selectedKey, onSelect, ru }) {
         </button>;
       })}
     </section>
-  </aside>;
+  </details>;
 }
 
 const formatControlVector = vector => vector
@@ -302,7 +330,9 @@ const getVisualSeekerOrigin = (visual, presentation) => {
 };
 
 function SelectedTelemetry({ entity, trackOptions, ru, debugOverlayVisible, controlledEntityId,
-  onTakeControl, onExitControl, onDestroyControllable, onSelectTrack }) {
+  onTakeControl, onExitControl, onDestroyControllable, onSelectTrack, onSetControlMode,
+  onFollow, onOpenFpv, onOpenOls }) {
+  const tr = term => localizeTechnicalTerm(term, ru ? UI_LANGUAGE.RU : UI_LANGUAGE.EN);
   if (!entity) return <aside className="advanced-telemetry is-empty">
     <span>{ru ? 'ВЫБЕРИТЕ ОБЪЕКТ' : 'SELECT ENTITY'}</span>
     <small>{ru ? 'Кликните по метке или используйте список' : 'Pick a marker or use the entity list'}</small>
@@ -318,106 +348,112 @@ function SelectedTelemetry({ entity, trackOptions, ru, debugOverlayVisible, cont
   const guidance = entity.guidanceDiagnostics ?? {};
   const visualDebug = debugOverlayVisible && entity.visualDebug ? (
     <dl className="advanced-telemetry__visual-debug">
-      <div><dt>RENDER</dt><dd>{entity.visualDebug.renderMode}</dd></div>
-      <div><dt>LOD</dt><dd>{entity.visualDebug.lodState}</dd></div>
-      <div><dt>CAM DIST</dt><dd>{entity.visualDebug.distanceToCameraKm.toFixed(1)} km</dd></div>
-      <div><dt>SCALE</dt><dd>{entity.visualDebug.visualScale.toFixed(2)}</dd></div>
-      <div><dt>MODEL</dt><dd>{entity.visualDebug.modelStatus}</dd></div>
-      <div><dt>PATH</dt><dd title={entity.visualDebug.resolvedModelPath}>{entity.visualDebug.resolvedModelPath.split('/').at(-1)}</dd></div>
+      <div><dt>{tr('RENDER')}</dt><dd>{tr(entity.visualDebug.renderMode)}</dd></div>
+      <div><dt>{tr('LOD')}</dt><dd>{tr(entity.visualDebug.lodState)}</dd></div>
+      <div><dt>{tr('CAM DIST')}</dt><dd>{entity.visualDebug.distanceToCameraKm.toFixed(1)} km</dd></div>
+      <div><dt>{tr('SCALE')}</dt><dd>{entity.visualDebug.visualScale.toFixed(2)}</dd></div>
+      <div><dt>{tr('MODEL')}</dt><dd>{tr(entity.visualDebug.modelStatus)}</dd></div>
+      <div><dt>{tr('PATH')}</dt><dd title={entity.visualDebug.resolvedModelPath}>{entity.visualDebug.resolvedModelPath.split('/').at(-1)}</dd></div>
     </dl>
   ) : null;
-  return <aside className={`advanced-telemetry${isInterceptor ? ' advanced-telemetry--missile' : ''}`}>
-    <small>{entityKindLabel}</small>
+  return <aside className={`advanced-telemetry target-lock${isInterceptor ? ' advanced-telemetry--missile' : ''}`}>
+    <small>{tr(entityKindLabel)}</small>
     <h2>{entity.displayName}</h2>
     <strong>{entity.id}</strong>
     {isInterceptor ? <>
       <dl className="advanced-telemetry__summary">
-        <div><dt>PHASE</dt><dd>{entity.flightPhase ?? entity.kinematicPhase ?? '—'}</dd></div>
-        <div><dt>GUIDANCE</dt><dd>{entity.guidanceState ?? '—'}</dd></div>
-        <div><dt>GUIDANCE SOURCE</dt><dd>{entity.guidanceSource ?? 'NETWORK_TRACK'}</dd></div>
-        <div><dt>TARGET</dt><dd>{entity.targetId ?? '—'}</dd></div>
-        <div><dt>SEEKER</dt><dd>{entity.seeker?.seekerType ?? 'NONE'}</dd></div>
-        <div><dt>SEEKER STATE</dt><dd>{entity.seeker?.state ?? 'OFF'}</dd></div>
-        <div><dt>SOURCE</dt><dd>{entity.sourceBatteryId ?? entity.sourceRadarId ?? '—'}</dd></div>
-        <div><dt>SPD</dt><dd>{Math.round(entity.speedKmh)} km/h</dd></div>
-        <div><dt>ALT</dt><dd>{(entity.altitudeM / 1000).toFixed(2)} km</dd></div>
+        <div><dt>{tr('PHASE')}</dt><dd>{tr(entity.flightPhase ?? entity.kinematicPhase ?? '—')}</dd></div>
+        <div><dt>{tr('GUIDANCE')}</dt><dd>{tr(entity.guidanceState ?? '—')}</dd></div>
+        <div><dt>{tr('GUIDANCE SOURCE')}</dt><dd>{tr(entity.guidanceSource ?? 'NETWORK_TRACK')}</dd></div>
+        <div><dt>{tr('TARGET')}</dt><dd>{entity.targetId ?? '—'}</dd></div>
+        <div><dt>{tr('SEEKER')}</dt><dd>{tr(entity.seeker?.seekerType ?? 'NONE')}</dd></div>
+        <div><dt>{tr('SEEKER STATE')}</dt><dd>{tr(entity.seeker?.state ?? 'OFF')}</dd></div>
+        <div><dt>{tr('SOURCE')}</dt><dd>{entity.sourceBatteryId ?? entity.sourceRadarId ?? '—'}</dd></div>
+        <div><dt>{tr('SPD')}</dt><dd>{Math.round(entity.speedKmh)} km/h</dd></div>
+        <div><dt>{tr('ALT')}</dt><dd>{(entity.altitudeM / 1000).toFixed(2)} km</dd></div>
         <div><dt>G</dt><dd>{formatTelemetryMetric(entity.currentG, 1, ' / ')}{formatTelemetryMetric(entity.maximumG, 1, ' G')}</dd></div>
-        <div><dt>RANGE</dt><dd>{formatTelemetryMetric(entity.distanceToTargetKm, 1, ' km')}</dd></div>
-        <div><dt>CLOSING SPEED</dt><dd>{formatTelemetryMetric(entity.closingSpeedMps, 1, ' m/s')}</dd></div>
-        <div><dt>TIME TO GO</dt><dd>{formatTelemetryMetric(entity.estimatedTimeToGoSec, 1, ' s')}</dd></div>
-        <div><dt>INTERCEPT</dt><dd>{entity.interceptSolutionStatus ?? '—'}</dd></div>
+        <div><dt>{tr('RANGE')}</dt><dd>{formatTelemetryMetric(entity.distanceToTargetKm, 1, ' km')}</dd></div>
+        <div><dt>{tr('CLOSING SPEED')}</dt><dd>{formatTelemetryMetric(entity.closingSpeedMps, 1, ' m/s')}</dd></div>
+        <div><dt>{tr('TIME TO GO')}</dt><dd>{formatTelemetryMetric(entity.estimatedTimeToGoSec, 1, ' s')}</dd></div>
+        <div><dt>{tr('INTERCEPT')}</dt><dd>{tr(entity.interceptSolutionStatus ?? '—')}</dd></div>
         {entity.seeker?.state && entity.seeker.state !== SEEKER_STATE.OFF && (
-          <div><dt>SEEKER EVIDENCE</dt><dd>{formatTelemetryMetric(entity.seeker.evidence, 3)}</dd></div>
+          <div><dt>{tr('SEEKER EVIDENCE')}</dt><dd>{formatTelemetryMetric(entity.seeker.evidence, 3)}</dd></div>
         )}
         {Number.isFinite(entity.seeker?.positionUncertaintyM) && (
-          <div><dt>POSITION UNCERTAINTY</dt><dd>{formatTelemetryMetric(entity.seeker.positionUncertaintyM, 1, ' m')}</dd></div>
+          <div><dt>{tr('POSITION UNCERTAINTY')}</dt><dd>{formatTelemetryMetric(entity.seeker.positionUncertaintyM, 1, ' m')}</dd></div>
         )}
       </dl>
       <details className="advanced-telemetry__advanced">
-        <summary>ADVANCED</summary>
+        <summary>{tr('ADVANCED')}</summary>
         {visualDebug}
         <dl>
-          <div><dt>LOS AZ / EL</dt><dd>{formatTelemetryMetric(guidance.losAzimuthDeg, 1, '°')} / {formatTelemetryMetric(guidance.losElevationDeg, 1, '°')}</dd></div>
-          <div><dt>LOS RATE</dt><dd>{formatTelemetryMetric(guidance.losRateDegPerSec, 1, '°/s')}</dd></div>
-          <div><dt>AZ / EL RATE</dt><dd>{formatTelemetryMetric(guidance.losAzimuthRateDegPerSec, 1, '°/s')} / {formatTelemetryMetric(guidance.losElevationRateDegPerSec, 1, '°/s')}</dd></div>
-          <div><dt>HEADING ERROR</dt><dd>{formatTelemetryMetric(guidance.headingErrorDeg, 1, '°')}</dd></div>
-          <div><dt>PITCH ERROR</dt><dd>{formatTelemetryMetric(guidance.pitchErrorDeg, 1, '°')}</dd></div>
-          <div><dt>COMMAND H / V</dt><dd>{formatTelemetryMetric(guidance.commandedHorizontalG, 1, ' G')} / {formatTelemetryMetric(guidance.commandedVerticalG, 1, ' G')}</dd></div>
-          <div><dt>ACTUAL H / V</dt><dd>{formatTelemetryMetric(guidance.actualHorizontalG, 1, ' G')} / {formatTelemetryMetric(guidance.actualVerticalG, 1, ' G')}</dd></div>
-          <div><dt>REQUIRED H / V</dt><dd>{formatTelemetryMetric(guidance.requiredHorizontalG, 1, ' G')} / {formatTelemetryMetric(guidance.requiredVerticalG, 1, ' G')}</dd></div>
-          <div><dt>AERO / ENERGY G</dt><dd>{formatTelemetryMetric(guidance.aeroAvailableG, 1, ' G')} / {formatTelemetryMetric(guidance.energyLimitedG, 1, ' G')}</dd></div>
-          <div><dt>AUTOPILOT ALLOWED G</dt><dd>{formatTelemetryMetric(guidance.autopilotAllowedG, 1, ' G')}</dd></div>
-          <div><dt>SEEKER RANGE</dt><dd>{formatTelemetryMetric(entity.seeker?.distanceKm, 2, ' km')} / {formatTelemetryMetric(entity.seeker?.effectiveRangeKm, 1, ' km')}</dd></div>
-          <div><dt>ACQUISITION SCORE</dt><dd>{formatTelemetryMetric(entity.seeker?.acquisitionScore, 3)}</dd></div>
-          <div><dt>SOURCE RADAR</dt><dd>{entity.sourceRadarId ?? '—'}</dd></div>
+          <div><dt>{tr('LOS AZ / EL')}</dt><dd>{formatTelemetryMetric(guidance.losAzimuthDeg, 1, '°')} / {formatTelemetryMetric(guidance.losElevationDeg, 1, '°')}</dd></div>
+          <div><dt>{tr('LOS RATE')}</dt><dd>{formatTelemetryMetric(guidance.losRateDegPerSec, 1, '°/s')}</dd></div>
+          <div><dt>{tr('AZ / EL RATE')}</dt><dd>{formatTelemetryMetric(guidance.losAzimuthRateDegPerSec, 1, '°/s')} / {formatTelemetryMetric(guidance.losElevationRateDegPerSec, 1, '°/s')}</dd></div>
+          <div><dt>{tr('HEADING ERROR')}</dt><dd>{formatTelemetryMetric(guidance.headingErrorDeg, 1, '°')}</dd></div>
+          <div><dt>{tr('PITCH ERROR')}</dt><dd>{formatTelemetryMetric(guidance.pitchErrorDeg, 1, '°')}</dd></div>
+          <div><dt>{tr('COMMAND H / V')}</dt><dd>{formatTelemetryMetric(guidance.commandedHorizontalG, 1, ' G')} / {formatTelemetryMetric(guidance.commandedVerticalG, 1, ' G')}</dd></div>
+          <div><dt>{tr('ACTUAL H / V')}</dt><dd>{formatTelemetryMetric(guidance.actualHorizontalG, 1, ' G')} / {formatTelemetryMetric(guidance.actualVerticalG, 1, ' G')}</dd></div>
+          <div><dt>{tr('REQUIRED H / V')}</dt><dd>{formatTelemetryMetric(guidance.requiredHorizontalG, 1, ' G')} / {formatTelemetryMetric(guidance.requiredVerticalG, 1, ' G')}</dd></div>
+          <div><dt>{tr('AERO / ENERGY G')}</dt><dd>{formatTelemetryMetric(guidance.aeroAvailableG, 1, ' G')} / {formatTelemetryMetric(guidance.energyLimitedG, 1, ' G')}</dd></div>
+          <div><dt>{tr('AUTOPILOT ALLOWED G')}</dt><dd>{formatTelemetryMetric(guidance.autopilotAllowedG, 1, ' G')}</dd></div>
+          <div><dt>{tr('SEEKER RANGE')}</dt><dd>{formatTelemetryMetric(entity.seeker?.distanceKm, 2, ' km')} / {formatTelemetryMetric(entity.seeker?.effectiveRangeKm, 1, ' km')}</dd></div>
+          <div><dt>{tr('ACQUISITION SCORE')}</dt><dd>{formatTelemetryMetric(entity.seeker?.acquisitionScore, 3)}</dd></div>
+          <div><dt>{tr('SOURCE RADAR')}</dt><dd>{entity.sourceRadarId ?? '—'}</dd></div>
         </dl>
       </details>
     </> : <>
       <dl>
-        <div><dt>ALT</dt><dd>{(entity.altitudeM / 1000).toFixed(2)} km</dd></div>
-        <div><dt>SPD</dt><dd>{Math.round(entity.speedKmh)} km/h</dd></div>
-        <div><dt>VZ</dt><dd>{entity.verticalSpeedMps >= 0 ? '+' : ''}{Math.round(entity.verticalSpeedMps)} m/s</dd></div>
-        <div><dt>{entity.ballistic ? 'FPA' : 'PITCH'}</dt><dd>{entity.pitchDeg.toFixed(1)}°</dd></div>
-        {entity.targetId && <div><dt>TARGET</dt><dd>{entity.targetId}</dd></div>}
-        {entity.distanceToTargetKm != null && <div><dt>DIST</dt><dd>{entity.distanceToTargetKm.toFixed(1)} km</dd></div>}
-        {entity.guidanceState && <div><dt>GUIDANCE</dt><dd>{entity.guidanceState}</dd></div>}
-        {entity.batteryRemaining != null && <div><dt>BATTERY</dt><dd>{Math.round(entity.batteryRemaining * 100)}%</dd></div>}
-        {entity.batteryVoltageV != null && <div><dt>VOLTAGE</dt><dd>{entity.batteryVoltageV.toFixed(1)} V</dd></div>}
-        {entity.currentAmps != null && <div><dt>CURRENT</dt><dd>{entity.currentAmps.toFixed(0)} A</dd></div>}
-        {entity.currentPowerKw != null && <div><dt>POWER</dt><dd>{entity.currentPowerKw.toFixed(2)} kW</dd></div>}
-        {entity.linkQuality != null && <div><dt>LINK</dt><dd>{Math.round(entity.linkQuality * 100)}%</dd></div>}
-        {entity.flightTimeSec != null && <div><dt>FLIGHT</dt><dd>{formatFlightTime(entity.flightTimeSec)}</dd></div>}
-        {entity.flightPhase && <div><dt>PHASE</dt><dd>{entity.flightPhase}</dd></div>}
+        <div><dt>{tr('ALT')}</dt><dd>{(entity.altitudeM / 1000).toFixed(2)} km</dd></div>
+        <div><dt>{tr('SPD')}</dt><dd>{Math.round(entity.speedKmh)} km/h</dd></div>
+        <div><dt>{tr('VZ')}</dt><dd>{entity.verticalSpeedMps >= 0 ? '+' : ''}{Math.round(entity.verticalSpeedMps)} m/s</dd></div>
+        <div><dt>{tr(entity.ballistic ? 'FPA' : 'PITCH')}</dt><dd>{entity.pitchDeg.toFixed(1)}°</dd></div>
+        {entity.targetId && <div><dt>{tr('TARGET')}</dt><dd>{entity.targetId}</dd></div>}
+        {entity.distanceToTargetKm != null && <div><dt>{tr('DIST')}</dt><dd>{entity.distanceToTargetKm.toFixed(1)} km</dd></div>}
+        {entity.guidanceState && <div><dt>{tr('GUIDANCE')}</dt><dd>{tr(entity.guidanceState)}</dd></div>}
+        {entity.batteryRemaining != null && <div><dt>{tr('BATTERY')}</dt><dd>{Math.round(entity.batteryRemaining * 100)}%</dd></div>}
+        {entity.batteryVoltageV != null && <div><dt>{tr('VOLTAGE')}</dt><dd>{entity.batteryVoltageV.toFixed(1)} V</dd></div>}
+        {entity.currentAmps != null && <div><dt>{tr('CURRENT')}</dt><dd>{entity.currentAmps.toFixed(0)} A</dd></div>}
+        {entity.currentPowerKw != null && <div><dt>{tr('POWER')}</dt><dd>{entity.currentPowerKw.toFixed(2)} kW</dd></div>}
+        {entity.linkQuality != null && <div><dt>{tr('LINK')}</dt><dd>{Math.round(entity.linkQuality * 100)}%</dd></div>}
+        {entity.flightTimeSec != null && <div><dt>{tr('FLIGHT')}</dt><dd>{formatFlightTime(entity.flightTimeSec)}</dd></div>}
+        {entity.flightPhase && <div><dt>{tr('PHASE')}</dt><dd>{tr(entity.flightPhase)}</dd></div>}
       </dl>
       {visualDebug}
       {entity.kind === ADVANCED_ENTITY_KIND.CONTROLLABLE && <dl className="advanced-telemetry__visual-debug">
-        <div><dt>CONTROL</dt><dd>{controlledEntityId === entity.id ? 'MANUAL' : 'RELEASED'}</dd></div>
-        <div><dt>SOURCE</dt><dd>{entity.launchSourceId ?? '—'}</dd></div>
-        <div><dt>TRACK</dt><dd>{entity.selectedTrackId ?? '—'}</dd></div>
-        <div><dt>COLLISION</dt><dd>{entity.collisionState}</dd></div>
-        <div><dt>CAMERA</dt><dd>{entity.cameraMode}</dd></div>
-        <div><dt>RAW INPUT</dt><dd>{formatControlVector(entity.rawInput)}</dd></div>
-        <div><dt>SMOOTH INPUT</dt><dd>{formatControlVector(entity.smoothedInput)}</dd></div>
-        <div><dt>DESIRED RATE</dt><dd>{formatRateVector(entity.desiredRatesDegPerSec)}</dd></div>
-        <div><dt>ACTUAL RATE</dt><dd>{formatRateVector(entity.actualRatesDegPerSec)}</dd></div>
-        <div><dt>MASS</dt><dd>{entity.forceTelemetry?.massKg?.toFixed(1) ?? '—'} KG</dd></div>
-        <div><dt>THROTTLE</dt><dd>{entity.throttleDemand?.toFixed(2) ?? '—'}</dd></div>
-        <div><dt>THRUST</dt><dd>{entity.forceTelemetry?.thrustN?.toFixed(1) ?? '—'} N</dd></div>
-        <div><dt>DRAG</dt><dd>{entity.forceTelemetry?.dragN?.toFixed(1) ?? '—'} N</dd></div>
-        <div><dt>VELOCITY ENU</dt><dd>{formatCartesianVector(entity.velocityVector)}</dd></div>
-        <div><dt>ACCEL ENU</dt><dd>{formatCartesianVector(entity.accelerationVector)}</dd></div>
-        <div><dt>PHYSICS POS</dt><dd>{formatPositionVector(entity.physicsPosition)}</dd></div>
-        <div><dt>RENDER POS</dt><dd>{formatPositionVector(entity.renderPosition)}</dd></div>
-        <div><dt>PHYSICS HPR</dt><dd>{formatRateVector(entity.physicsOrientation)}</dd></div>
-        <div><dt>RENDER HPR</dt><dd>{formatRateVector(entity.renderOrientation)}</dd></div>
-        <div><dt>PHYSICS CADENCE</dt><dd>{entity.visualCadence?.physicsIntervalMs?.toFixed(1) ?? '—'} MS</dd></div>
-        <div><dt>RENDER CADENCE</dt><dd>{entity.visualCadence?.renderDeltaMs?.toFixed(1) ?? '—'} MS</dd></div>
-        <div><dt>INTERPOLATION</dt><dd>{entity.visualCadence?.interpolationDurationMs?.toFixed(1) ?? '—'} MS</dd></div>
-        <div><dt>EXTRAPOLATION</dt><dd>{entity.visualCadence?.extrapolationMs?.toFixed(1) ?? '—'} MS</dd></div>
+        <div><dt>{tr('CONTROL')}</dt><dd>{tr(controlledEntityId === entity.id ? 'MANUAL' : 'RELEASED')}</dd></div>
+        <div><dt>{tr('SOURCE')}</dt><dd>{entity.launchSourceId ?? '—'}</dd></div>
+        <div><dt>{tr('TRACK')}</dt><dd>{entity.selectedTrackId ?? '—'}</dd></div>
+        <div><dt>{tr('COLLISION')}</dt><dd>{tr(entity.collisionState)}</dd></div>
+        <div><dt>{tr('CAMERA')}</dt><dd>{tr(entity.cameraMode)}</dd></div>
+        {debugOverlayVisible && <><div><dt>{tr('RAW INPUT')}</dt><dd>{formatControlVector(entity.rawInput)}</dd></div>
+        <div><dt>{tr('SMOOTH INPUT')}</dt><dd>{formatControlVector(entity.smoothedInput)}</dd></div>
+        <div><dt>{tr('DESIRED RATE')}</dt><dd>{formatRateVector(entity.desiredRatesDegPerSec)}</dd></div>
+        <div><dt>{tr('ACTUAL RATE')}</dt><dd>{formatRateVector(entity.actualRatesDegPerSec)}</dd></div>
+        <div><dt>{tr('MASS')}</dt><dd>{entity.forceTelemetry?.massKg?.toFixed(1) ?? '—'} KG</dd></div>
+        <div><dt>{tr('THROTTLE')}</dt><dd>{entity.throttleDemand?.toFixed(2) ?? '—'}</dd></div>
+        <div><dt>{tr('THRUST')}</dt><dd>{entity.forceTelemetry?.thrustN?.toFixed(1) ?? '—'} N</dd></div>
+        <div><dt>{tr('DRAG')}</dt><dd>{entity.forceTelemetry?.dragN?.toFixed(1) ?? '—'} N</dd></div>
+        <div><dt>{tr('VELOCITY ENU')}</dt><dd>{formatCartesianVector(entity.velocityVector)}</dd></div>
+        <div><dt>{tr('ACCEL ENU')}</dt><dd>{formatCartesianVector(entity.accelerationVector)}</dd></div>
+        <div><dt>{tr('PHYSICS POS')}</dt><dd>{formatPositionVector(entity.physicsPosition)}</dd></div>
+        <div><dt>{tr('RENDER POS')}</dt><dd>{formatPositionVector(entity.renderPosition)}</dd></div>
+        <div><dt>{tr('PHYSICS HPR')}</dt><dd>{formatRateVector(entity.physicsOrientation)}</dd></div>
+        <div><dt>{tr('RENDER HPR')}</dt><dd>{formatRateVector(entity.renderOrientation)}</dd></div>
+        <div><dt>{tr('PHYSICS CADENCE')}</dt><dd>{entity.visualCadence?.physicsIntervalMs?.toFixed(1) ?? '—'} MS</dd></div>
+        <div><dt>{tr('RENDER CADENCE')}</dt><dd>{entity.visualCadence?.renderDeltaMs?.toFixed(1) ?? '—'} MS</dd></div>
+        <div><dt>{tr('INTERPOLATION')}</dt><dd>{entity.visualCadence?.interpolationDurationMs?.toFixed(1) ?? '—'} MS</dd></div>
+        <div><dt>{tr('EXTRAPOLATION')}</dt><dd>{entity.visualCadence?.extrapolationMs?.toFixed(1) ?? '—'} MS</dd></div></>}
       </dl>}
     </>}
     {entity.kind === ADVANCED_ENTITY_KIND.CONTROLLABLE && (
       <div className="advanced-telemetry__actions">
+        <div className="advanced-telemetry__mode-row">
+          {[CONTROLLABLE_CONTROL_MODE.MANUAL, CONTROLLABLE_CONTROL_MODE.HOLD,
+            CONTROLLABLE_CONTROL_MODE.AUTO_NAV].map(mode => <button key={mode} type="button"
+              className={entity.controlMode === mode ? 'is-active' : ''}
+              onClick={() => onSetControlMode(entity.id, mode)}>{tr(mode)}</button>)}
+        </div>
         <label className="advanced-telemetry__track-select">
           <span>{ru ? 'ТРАССА ЦЕЛИ' : 'TARGET TRACK'}</span>
           <select value={entity.selectedTrackId ?? ''}
@@ -439,15 +475,25 @@ function SelectedTelemetry({ entity, trackOptions, ru, debugOverlayVisible, cont
             {ru ? 'ВЗЯТЬ УПРАВЛЕНИЕ' : 'TAKE CONTROL'}
           </button>
         )}
+        <button type="button" onClick={() => onFollow(entity.id)}>FOLLOW</button>
+        <button type="button" onClick={() => onOpenFpv(entity.id)}>FPV</button>
         <button type="button" className="is-danger" onClick={() => onDestroyControllable(entity.id)}>
           {ru ? 'УДАЛИТЬ FPV' : 'DESTROY FPV'}
         </button>
       </div>
     )}
+    {entity.kind === ADVANCED_ENTITY_KIND.TARGET && (
+      <AdvancedFireControl key={entity.id} targetId={entity.id} ru={ru} />
+    )}
+    {entity.kind === ADVANCED_ENTITY_KIND.TARGET && (
+      <div className="advanced-telemetry__actions">
+        <button type="button" onClick={() => onOpenOls(entity.id)}>OLS · TRACK TARGET</button>
+      </div>
+    )}
   </aside>;
 }
 
-export default function AdvancedScene({ active = true, onVisualFrame }) {
+export default function AdvancedScene({ active = true, onVisualFrame, sandboxMode = false }) {
   const visualFrameObserverRef = useRef(onVisualFrame);
   useEffect(() => { visualFrameObserverRef.current = onVisualFrame; }, [onVisualFrame]);
   const activeRef = useRef(active);
@@ -473,6 +519,9 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
   const trailEntityRef = useRef([]);
   const plumeEntitiesRef = useRef(new Map());
   const smokePuffsRef = useRef([]);
+  const smokeStrandsRef = useRef(new Map());
+  const launchEffectsRef = useRef(new Map());
+  const sensorExposureRef = useRef({ heat: 0, flashAt: -Infinity, flashStrength: 0, lastFrameAt: 0 });
   const thermalTrailEntitiesRef = useRef(new Map());
   const radarBeamEntitiesRef = useRef(new Map());
   const seekerDebugEntitiesRef = useRef(new Map());
@@ -484,22 +533,31 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
   const fpvEdgeCueRef = useRef(null);
   const lastSmokeSampleRef = useRef(new Map());
   const interceptEffectsRef = useRef(new Map());
+  const asterBoosterDebrisRef = useRef(new Map());
   const trackRangeHistoryRef = useRef(new Map());
   const altitudeReferenceRef = useRef(null);
   const cameraControllerRef = useRef(null);
   const selectedKeyRef = useRef(null);
   const cameraModeRef = useRef(CAMERA_MODE.FREE);
-  const visualModeRef = useRef(ADVANCED_VISUAL_MODE.VISUAL);
+  const visualModeRef = useRef(ADVANCED_VISUAL_MODE.DAY);
   const fpvFeedModeRef = useRef(false);
   const modelAvailabilityRef = useRef(new Map());
+  const olsFromAdvancedRef = useRef(false);
+  const torOlsReturnRef = useRef(null);
+  const advancedFpvReturnRef = useRef(null);
   const returnToCommand = useGameStore(state => state.returnToCommand);
+  const returnToMenu = useGameStore(state => state.returnToMenu);
   const presentationMode = useGameStore(state => state.presentationMode);
   const fpvFeedEntityId = useGameStore(state => state.fpvFeedEntityId);
+  const olsRequestedTargetKey = useGameStore(state => state.olsRequestedTargetKey);
+  const torOlsManual = useGameStore(state => state.torOlsManual);
+  const torOlsReturnScene = useGameStore(state => state.torOlsReturnScene);
   const language = useGameStore(state => state.language);
   const debugOverlayVisible = useViewStore(state => state.layers.debugOverlay);
   const advancedOverlays = useViewStore(state => state.advancedOverlays);
-  const overlaysRef = useRef(advancedOverlays);
-  useEffect(() => { overlaysRef.current = advancedOverlays; }, [advancedOverlays]);
+  const [engineeringEnabled, setEngineeringEnabled] = useState(false);
+  const overlaysRef = useRef(effectiveAdvancedOverlays(advancedOverlays, false));
+  useEffect(() => { overlaysRef.current = effectiveAdvancedOverlays(advancedOverlays, engineeringEnabled); }, [advancedOverlays, engineeringEnabled]);
   const ru = language === UI_LANGUAGE.RU;
   const tick = useEngine(state => state.tick);
   const publishVisualSnapshot = useEngine(state => state.publishVisualSnapshot);
@@ -510,12 +568,16 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
   const setSelectedTrack = useEngine(state => state.setSelectedTrack);
   const setControlledControllableEntity = useEngine(state => state.setControlledControllableEntity);
   const setControllableCameraMode = useEngine(state => state.setControllableCameraMode);
+  const setControllableControlMode = useEngine(state => state.setControllableControlMode);
+  const setControllableNavigationTrack = useEngine(state => state.setControllableNavigationTrack);
   const controlledControllableEntityId = useEngine(state => state.controlledControllableEntityId);
   const releaseControllableControl = useEngine(state => state.releaseControllableControl);
   const destroyControllableEntity = useEngine(state => state.destroyControllableEntity);
+  const [activeFpvEntityId, setActiveFpvEntityId] = useState(null);
+  const monitoredFpvEntityId = activeFpvEntityId ?? fpvFeedEntityId;
   const fpvFeedConnected = useEngine(state => {
-    if (!fpvFeedEntityId) return true;
-    const entity = state.controllableAirEntities.find(candidate => candidate.id === fpvFeedEntityId);
+    if (!monitoredFpvEntityId) return true;
+    const entity = state.controllableAirEntities.find(candidate => candidate.id === monitoredFpvEntityId);
     return entity?.status === 'ACTIVE' && (entity.linkQuality ?? 1) > 0;
   });
   const setControllableSelectedTrack = useEngine(state => state.setControllableSelectedTrack);
@@ -529,16 +591,26 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
   const [cameraToast, setCameraToast] = useState(null);
   const [controlDetailsEntityId, setControlDetailsEntityId] = useState(null);
   const [viewerReady, setViewerReady] = useState(null);
-  const [visualMode, setVisualMode] = useState(ADVANCED_VISUAL_MODE.VISUAL);
+  const [groundSelected, setGroundSelected] = useState(null);
+  const visualMode = olsMode;
+  const setVisualMode = useOlsViewStore(state => state.setMode);
   const [lastFpvTelemetry, setLastFpvTelemetry] = useState(null);
   const fpvFeedMode = presentationMode === PRESENTATION_MODE.FPV_FEED;
   const olsFeedMode = presentationMode === PRESENTATION_MODE.OLS_FEED;
-  const cameraFeedMode = fpvFeedMode || olsFeedMode;
-  const signalLost = fpvFeedMode && !fpvFeedConnected;
+  const cameraFeedMode = fpvFeedMode || olsFeedMode || cameraMode === CAMERA_MODE.FPV;
+  const signalLost = cameraMode === CAMERA_MODE.FPV
+    && Boolean(monitoredFpvEntityId) && !fpvFeedConnected;
 
   useEffect(() => {
-    visualModeRef.current = olsFeedMode ? (olsMode === 'THERMAL' ? 'THERMAL' : 'VISUAL') : visualMode;
-  }, [visualMode, olsFeedMode, olsMode]);
+    if (sandboxMode && !useGameStore.getState().resumeCommandSimulation
+      && useGameStore.getState().presentationMode === PRESENTATION_MODE.ADVANCED) {
+      useEngine.getState().resetScenario('SANDBOX');
+    }
+  }, [sandboxMode]);
+
+  useEffect(() => {
+    visualModeRef.current = visualMode;
+  }, [visualMode]);
 
   useEffect(() => { olsFeedModeRef.current = olsFeedMode; }, [olsFeedMode]);
 
@@ -566,10 +638,126 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
     cameraControllerRef.current?.resetView();
   }, []);
 
-  const returnToCommandSafely = useCallback(() => {
+  const enterAdvancedFpv = useCallback(id => {
+    const viewer = viewerRef.current;
+    const entity = useEngine.getState().controllableAirEntities.find(candidate => candidate.id === id);
+    if (!viewer || entity?.status !== 'ACTIVE') { showCameraToast('NO FPV DRONE AVAILABLE'); return; }
+    if (advancedFpvReturnRef.current) return;
+    advancedFpvReturnRef.current = {
+      entityId: id,
+      mode: cameraModeRef.current,
+      destination: Cartesian3.clone(viewer.camera.positionWC),
+      direction: Cartesian3.clone(viewer.camera.directionWC),
+      up: Cartesian3.clone(viewer.camera.upWC),
+    };
+    setSelectedControllableEntity(id);
+    setActiveFpvEntityId(id);
+    selectedKeyRef.current = makeSelectionKey(ADVANCED_ENTITY_KIND.CONTROLLABLE, id);
+    setSelectedKey(selectedKeyRef.current);
+    setControllableControlMode(id, CONTROLLABLE_CONTROL_MODE.MANUAL);
+    setControlledControllableEntity(id);
+    setCameraMode(CAMERA_MODE.FPV);
+    cameraControllerRef.current?.beginFpvTransition(1.5);
+  }, [setCameraMode, setControllableControlMode, setControlledControllableEntity,
+    setSelectedControllableEntity, showCameraToast]);
+
+  const exitAdvancedFpv = useCallback(() => {
+    const saved = advancedFpvReturnRef.current;
+    advancedFpvReturnRef.current = null;
+    setActiveFpvEntityId(null);
     releaseControllableControl();
-    returnToCommand();
-  }, [releaseControllableControl, returnToCommand]);
+    setCameraMode(CAMERA_MODE.FREE);
+    if (saved?.entityId) setControllableCameraMode(saved.entityId, CONTROLLABLE_CAMERA_MODE.THIRD_PERSON);
+    const viewer = viewerRef.current;
+    if (!saved || !viewer || viewer.isDestroyed()) return;
+    viewer.camera.flyTo({ destination: saved.destination,
+      orientation: { direction: saved.direction, up: saved.up }, duration: 1.5,
+      complete: () => { if (saved.mode !== CAMERA_MODE.FREE) setCameraMode(saved.mode); } });
+  }, [releaseControllableControl, setCameraMode, setControllableCameraMode]);
+
+  const returnToCommandSafely = useCallback(() => {
+    if (useGameStore.getState().torOlsReturnScene) {
+      const saved = torOlsReturnRef.current;
+      torOlsReturnRef.current = null;
+      olsControllerRef.current?.leave();
+      useOlsViewStore.getState().release();
+      useGameStore.getState().returnFromTorOls();
+      if (saved) requestAnimationFrame(() => {
+        const viewer = viewerRef.current;
+        if (!viewer || viewer.isDestroyed()) return;
+        viewer.camera.setView({ destination: saved.destination,
+          orientation: { direction: saved.direction, up: saved.up } });
+        setCameraMode(saved.mode);
+      });
+      return;
+    }
+    setActiveFpvEntityId(null);
+    releaseControllableControl();
+    if (olsFromAdvancedRef.current) {
+      olsFromAdvancedRef.current = false;
+      if (sandboxMode) useGameStore.getState().openAdvancedSandbox();
+      else useGameStore.getState().openAdvanced3D();
+      return;
+    }
+    if (cameraFeedMode) returnToCommand();
+    else returnToMenu();
+  }, [cameraFeedMode, releaseControllableControl, returnToCommand, returnToMenu, sandboxMode, setCameraMode]);
+
+  const openCanonicalTorOls = useCallback((station, targetKey = null) => {
+    const viewer = viewerRef.current;
+    if (!station || station.category !== 'TOR_M1' || !viewer || viewer.isDestroyed()) return;
+    torOlsReturnRef.current = {
+      mode: cameraModeRef.current,
+      destination: Cartesian3.clone(viewer.camera.positionWC),
+      direction: Cartesian3.clone(viewer.camera.directionWC),
+      up: Cartesian3.clone(viewer.camera.upWC),
+    };
+    useGameStore.getState().openTorOlsFeed(station.id,
+      station.controlMode === BATTERY_CONTROL_MODE.MANUAL, targetKey);
+  }, []);
+
+  useEffect(() => () => {
+    useOlsViewStore.getState().release();
+    releaseControllableControl();
+  }, [releaseControllableControl]);
+
+  useEffect(() => {
+    if (!fpvFeedMode || !viewerReady) return;
+    const frame = requestAnimationFrame(() => {
+    const entity = useEngine.getState().controllableAirEntities.find(item => item.id === fpvFeedEntityId);
+    if (entity?.status !== 'ACTIVE') { showCameraToast('NO FPV DRONE AVAILABLE'); returnToCommandSafely(); return; }
+    selectedKeyRef.current = makeSelectionKey(ADVANCED_ENTITY_KIND.CONTROLLABLE, entity.id);
+    setSelectedKey(selectedKeyRef.current);
+    setSelectedControllableEntity(entity.id);
+    setActiveFpvEntityId(entity.id);
+    setControllableControlMode(entity.id, CONTROLLABLE_CONTROL_MODE.MANUAL);
+    setControlledControllableEntity(entity.id);
+    setCameraMode(CAMERA_MODE.FPV);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [fpvFeedMode, fpvFeedEntityId, viewerReady, setCameraMode,
+    setControllableControlMode, setControlledControllableEntity,
+    setSelectedControllableEntity, returnToCommandSafely, showCameraToast]);
+
+  useEffect(() => {
+    if (controlledControllableEntityId) return;
+    const onKey = event => {
+      if (event.code === 'Escape' && !event.repeat) {
+        if (fpvFeedMode) returnToCommandSafely();
+        else if (advancedFpvReturnRef.current) exitAdvancedFpv();
+        else if (groundSelected || selectedKeyRef.current) {
+          setGroundSelected(null);
+          selectedKeyRef.current = null;
+          setSelectedKey(null);
+          setSelectedTelemetry(null);
+        }
+      }
+      if (event.code === 'KeyV' && fpvFeedMode && !event.repeat) setVisualMode(cycleVisualMode(useOlsViewStore.getState().mode));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [controlledControllableEntityId, fpvFeedMode, groundSelected, returnToCommandSafely,
+    exitAdvancedFpv, setVisualMode]);
 
   useEffect(() => {
     if (!viewerReady) return undefined;
@@ -586,18 +774,28 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
       const station = [...state.searchRadars, ...state.batteries].find(s => s.id === olsStationId);
       // An estimated radar cue may set the initial viewing direction. Optical
       // lock is still empty until the player chooses a visible rendered entity.
-      const cue = state.tracks.find(t => t.id === state.selectedTrackId && isAvailableNetworkTrack(t))
+      const requestedTargetId = olsRequestedTargetKey?.startsWith('TARGET:')
+        ? olsRequestedTargetKey.slice('TARGET:'.length) : null;
+      const cue = state.tracks.find(t => t.targetId === requestedTargetId && isAvailableNetworkTrack(t))
+        ?? state.tracks.find(t => t.id === state.selectedTrackId && isAvailableNetworkTrack(t))
         ?? state.tracks.find(t => t.sourceBatteryId === olsStationId && isAvailableNetworkTrack(t));
-      if (station) olsControllerRef.current?.enter(station, cue);
+      if (station) olsControllerRef.current?.enter(station, cue,
+        torOlsManual ? null : olsRequestedTargetKey,
+        { manualControl: station.category === 'TOR_M1'
+          && station.controlMode === BATTERY_CONTROL_MODE.MANUAL });
     }
     return () => olsControllerRef.current?.leave();
-  }, [active, viewerReady, olsFeedMode, olsStationId, releaseControllableControl]);
+  }, [active, viewerReady, olsFeedMode, olsStationId, olsRequestedTargetKey,
+    torOlsManual, releaseControllableControl]);
 
   useEffect(() => {
     if (!signalLost) return undefined;
-    const timer = window.setTimeout(returnToCommandSafely, 1800);
+    const timer = window.setTimeout(() => {
+      if (advancedFpvReturnRef.current) exitAdvancedFpv();
+      else returnToCommandSafely();
+    }, 2300);
     return () => window.clearTimeout(timer);
-  }, [returnToCommandSafely, signalLost]);
+  }, [exitAdvancedFpv, returnToCommandSafely, signalLost]);
 
   const selectEntity = useCallback((key, focus = true) => {
     const selection = parseSelectionKey(key);
@@ -730,6 +928,7 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
       }
       if (event.code === 'Escape' && !event.repeat) {
         if (fpvFeedMode) returnToCommandSafely();
+        else if (cameraModeRef.current === CAMERA_MODE.FPV && advancedFpvReturnRef.current) exitAdvancedFpv();
         else {
           releaseControllableControl();
           setCameraMode(CAMERA_MODE.FREE);
@@ -739,8 +938,7 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
         return;
       }
       if (event.code === 'KeyV' && !event.repeat && fpvFeedMode) {
-        setVisualMode(mode => mode === ADVANCED_VISUAL_MODE.VISUAL
-          ? ADVANCED_VISUAL_MODE.THERMAL : ADVANCED_VISUAL_MODE.VISUAL);
+        setVisualMode(cycleVisualMode(useOlsViewStore.getState().mode));
         event.preventDefault();
         return;
       }
@@ -763,6 +961,12 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
       }
       if (!['KeyW', 'KeyS', 'KeyA', 'KeyD', 'KeyQ', 'KeyE', 'ShiftLeft', 'ShiftRight',
         'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(event.code)) return;
+      const controlled = useEngine.getState().controllableAirEntities.find(
+        candidate => candidate.id === controlledControllableEntityId);
+      if (controlled?.controlMode !== CONTROLLABLE_CONTROL_MODE.MANUAL) {
+        useEngine.getState().setControllableControlMode(controlledControllableEntityId,
+          CONTROLLABLE_CONTROL_MODE.MANUAL);
+      }
       pressed.add(event.code);
       if (['KeyW', 'KeyS'].includes(event.code)) {
         useManualControlStore.getState().setThrottleAssist(controlledControllableEntityId,
@@ -777,6 +981,12 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
     const onMouseMove = event => {
       const canvas = viewerRef.current?.scene?.canvas;
       if (!canvas || (document.pointerLockElement !== canvas && (event.buttons & 1) === 0)) return;
+      const controlled = useEngine.getState().controllableAirEntities.find(
+        candidate => candidate.id === controlledControllableEntityId);
+      if (controlled?.controlMode !== CONTROLLABLE_CONTROL_MODE.MANUAL) {
+        useEngine.getState().setControllableControlMode(controlledControllableEntityId,
+          CONTROLLABLE_CONTROL_MODE.MANUAL);
+      }
       const horizontalCommand = responseCurve(
         event.movementX * (mouseConfig.sensitivityX ?? 0.027),
       );
@@ -823,8 +1033,8 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
       if (document.pointerLockElement === canvas) document.exitPointerLock?.();
       clear();
     };
-  }, [controlledControllableEntityId, fpvFeedMode, releaseControllableControl,
-    returnToCommandSafely, ru, setCameraMode, showCameraToast, viewerReady]);
+  }, [controlledControllableEntityId, exitAdvancedFpv, fpvFeedMode, releaseControllableControl,
+    returnToCommandSafely, ru, setCameraMode, setVisualMode, showCameraToast, viewerReady]);
 
   useEffect(() => {
     setPerformanceMonitoringEnabled(true);
@@ -876,12 +1086,16 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
     const trailHistory = trailHistoryRef.current;
     const plumeEntities = plumeEntitiesRef.current;
     const smokePuffs = smokePuffsRef.current;
+    const smokeStrands = smokeStrandsRef.current;
+    const launchEffects = launchEffectsRef.current;
+    const sensorExposure = sensorExposureRef.current;
     const thermalTrailEntities = thermalTrailEntitiesRef.current;
     const radarBeamEntities = radarBeamEntitiesRef.current;
     const seekerDebugEntities = seekerDebugEntitiesRef.current;
     const rawMeasurementEntities = rawMeasurementEntitiesRef.current;
     const lastSmokeSample = lastSmokeSampleRef.current;
     const interceptEffects = interceptEffectsRef.current;
+    const asterBoosterDebris = asterBoosterDebrisRef.current;
     let trackArray = null;
     let tracksById = new Map();
     const readTrackPose = id => {
@@ -1029,8 +1243,8 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
         id: `advanced-radar-beam:${id}`,
         show: false,
         polyline: {
-          positions: new CallbackProperty(() => scanPositions, false), width: 1.8,
-          material: Color.fromCssColorString('#72d8d0').withAlpha(0.58),
+          positions: new CallbackProperty(() => scanPositions, false), width: 1,
+          material: Color.fromCssColorString('#72d8d0').withAlpha(0.055),
           arcType: ArcType.GEODESIC,
           distanceDisplayCondition: new DistanceDisplayCondition(0, 2_500_000),
         },
@@ -1040,9 +1254,9 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
         show: false,
         polygon: {
           hierarchy: new CallbackProperty(() => sectorHierarchy, false),
-          material: Color.fromCssColorString('#52cbbd').withAlpha(0.075),
-          outline: true,
-          outlineColor: Color.fromCssColorString('#72d8d0').withAlpha(0.34),
+          material: Color.fromCssColorString('#52cbbd').withAlpha(0.012),
+          outline: false,
+          outlineColor: Color.fromCssColorString('#72d8d0').withAlpha(0.1),
           outlineWidth: 1,
           arcType: ArcType.GEODESIC,
         },
@@ -1055,6 +1269,37 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
       };
       beam.sectorEntity = sector;
       return beam;
+    };
+    const updateGroundRadarSweep = ({ key, radar, lat, lng, rangeKm,
+      headingDeg = 0, sectorDeg = 360, operational = true }) => {
+      let beam = radarBeamEntities.get(key);
+      if (!radar?.scanState || !operational) {
+        if (beam) { beam.show = false; beam.sectorEntity.show = false; }
+        return;
+      }
+      if (!beam) {
+        beam = createRadarBeam(key);
+        radarBeamEntities.set(key, beam);
+      }
+      const electronic = radar.scanState.scanType === 'ELECTRONIC_SECTOR';
+      const azimuth = electronic ? headingDeg : radar.scanState.currentAzimuth;
+      const halfWidth = electronic ? Math.min(180, sectorDeg / 2)
+        : Math.max(1, radar.scanState.beamWidthDeg / 2);
+      const radiusKm = Math.min(12, rangeKm ?? 12);
+      const origin = Cartesian3.fromDegrees(lng, lat, 2);
+      const edges = [azimuth - halfWidth, azimuth, azimuth + halfWidth].map(angle => {
+        const endpoint = getDestinationPoint(lat, lng, angle, radiusKm);
+        return Cartesian3.fromDegrees(endpoint.lng, endpoint.lat, 2);
+      });
+      beam.updateScanPositions(edges.flatMap(endpoint => [origin, endpoint]));
+      beam.updateSectorPositions([origin, edges[0], edges[2]]);
+      const visible = !olsFeedModeRef.current && !fpvFeedModeRef.current;
+      beam.show = visible && !electronic;
+      beam.sectorEntity.show = visible;
+      const debug = overlaysRef.current.radarBeams;
+      beam.polyline.material = Color.fromCssColorString('#72d8d0').withAlpha(debug ? .18 : .055);
+      beam.sectorEntity.polygon.material = Color.fromCssColorString('#52cbbd')
+        .withAlpha(debug ? .04 : .012);
     };
     guidanceDebugEntitiesRef.current = {
       intercept: createDynamicMarker('advanced-debug:intercept', 'INTERCEPT',
@@ -1074,6 +1319,20 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
     if (viewer.scene.skyBox) viewer.scene.skyBox.show = true;
     viewer.scene.fog.enabled = true;
     viewer.scene.highDynamicRange = true;
+    // Avoid Cesium's rotating wheel zoom singularity at the screen centre.
+    const onFreeCameraWheel = (event) => {
+      if (cameraModeRef.current !== CAMERA_MODE.FREE || olsFeedModeRef.current) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      const height = viewer.camera.positionCartographic.height;
+      if (!Number.isFinite(height)) return;
+      const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 300 : 1);
+      const distance = Math.max(250, height)
+        * Math.expm1(Math.min(0.8, Math.abs(delta) * 0.002));
+      if (delta > 0) viewer.camera.zoomOut(distance);
+      else if (delta < 0) viewer.camera.zoomIn(Math.min(distance, Math.max(0, height - 15)));
+    };
+    viewer.canvas.addEventListener('wheel', onFreeCameraWheel, { capture: true, passive: false });
     viewer.camera.setView({
       destination: Cartesian3.fromDegrees(30.5, 48.5, 2_150_000),
       orientation: { heading: 0, pitch: CesiumMath.toRadians(-82), roll: 0 },
@@ -1083,17 +1342,49 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
     cameraControllerRef.current = cameraController;
     const olsController = createOlsCameraController(viewer, {
       getMetadata: () => entityMetaRef.current, getBracket: () => olsBracketRef.current,
-      onExit: () => useGameStore.getState().returnToCommand(),
+      onExit: returnToCommandSafely,
+      onManualAim: (stationId, azimuthDeg, elevationDeg) => {
+        const battery = useEngine.getState().batteries.find(item => item.id === stationId);
+        if (battery?.category === 'TOR_M1' && battery.controlMode === BATTERY_CONTROL_MODE.MANUAL) {
+          useEngine.getState().setTorManualSight(stationId, azimuthDeg, elevationDeg);
+        }
+      },
+      onLaunch: (stationId, targetKey, azimuthDeg, elevationDeg) => {
+        const state = useEngine.getState();
+        const isRussian = useGameStore.getState().language === UI_LANGUAGE.RU;
+        const battery = state.batteries.find(item => item.id === stationId);
+        if (battery?.category !== 'TOR_M1' || battery.controlMode !== BATTERY_CONTROL_MODE.MANUAL) return;
+        const targetId = targetKey?.startsWith('TARGET:') ? targetKey.slice(7) : null;
+        const track = state.tracks.find(item => item.targetId === targetId
+          && isAvailableNetworkTrack(item));
+        state.setTorManualSight(battery.id, azimuthDeg, elevationDeg);
+        const missileId = useEngine.getState().queueTorManualSight(battery.id, track?.id ?? null);
+        showCameraToast(missileId ? `9M331 · ${isRussian ? 'ПУСК' : 'LAUNCH'}`
+          : isRussian ? 'ПУСК НЕДОСТУПЕН' : 'LAUNCH UNAVAILABLE');
+      },
     });
     olsControllerRef.current = olsController;
+    const launchLight = () => {
+      const recent = [...launchEffects.values()].at(-1);
+      return recent ? { position: Matrix4.multiplyByPoint(viewer.camera.viewMatrix,
+        recent.position, new Cartesian3()), strength: Math.exp(-(performance.now() - recent.startedAt) / 280) }
+        : { position: Cartesian3.ZERO, strength: 0 };
+    };
+    const environment = createAdvancedEnvironment(viewer);
     const cameraEffect = createFpvCameraEffect(viewer.scene, () => ({
       fpv: !olsFeedModeRef.current && cameraModeRef.current === CAMERA_MODE.FPV,
       thermal: visualModeRef.current === ADVANCED_VISUAL_MODE.THERMAL,
       ols: olsFeedModeRef.current,
-      lowLight: olsFeedModeRef.current && useOlsViewStore.getState().mode === 'LOW-LIGHT',
-      flash: olsController.flash(),
+      lowLight: visualModeRef.current === ADVANCED_VISUAL_MODE.LOW_LIGHT,
+      ...olsController.optics(),
+      flash: Math.max(olsController.flash(), sensorExposure.flashStrength
+        * Math.exp(-(performance.now() - sensorExposure.flashAt) / 260)),
+      flashAgeSec: Math.min(olsController.optics().flashAgeSec,
+        Math.max(0, performance.now() - sensorExposure.flashAt) / 1000),
+      heatLoad: sensorExposure.heat,
+      launchLight: launchLight(),
     }));
-    let previousThermal = false;
+    let previousEnvironmentMode = null;
 
     const makeEffectTexture = (kind) => {
       const canvas = document.createElement('canvas');
@@ -1103,25 +1394,29 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
       context.clearRect(0, 0, 128, 128);
       if (kind === 'FLASH') {
         const gradient = context.createRadialGradient(64, 64, 0, 64, 64, 60);
-        gradient.addColorStop(0, 'rgba(255,252,225,1)');
-        gradient.addColorStop(0.12, 'rgba(255,221,151,.92)');
-        gradient.addColorStop(0.38, 'rgba(222,125,55,.48)');
+        gradient.addColorStop(0, 'rgba(255,255,255,1)');
+        gradient.addColorStop(0.12, 'rgba(255,255,255,.98)');
+        gradient.addColorStop(0.38, 'rgba(255,255,255,.38)');
         gradient.addColorStop(1, 'rgba(84,67,55,0)');
         context.fillStyle = gradient;
         context.fillRect(0, 0, 128, 128);
       } else {
-        const clouds = [
-          [60, 66, 36, .48], [42, 70, 27, .34], [79, 56, 30, .38],
-          [69, 39, 24, .28], [91, 76, 22, .22], [48, 45, 20, .24],
-        ];
-        clouds.forEach(([x, y, radius, alpha]) => {
+        // Shared neutral luminance atlas: tint and heat come from the sensor mode.
+        const seed = kind === 'SMOKE2' ? 7 : kind === 'SMOKE3' ? 13 : 0;
+        for (let index = 0; index < 38; index++) {
+          const angle = index * 2.39996 + seed;
+          const spread = 8 + (index % 9) * 3.6;
+          const x = 64 + Math.cos(angle) * spread;
+          const y = 64 + Math.sin(angle * 1.07) * spread;
+          const radius = 10 + (index % 5) * 3.7;
+          const alpha = .14 + (index % 4) * .045;
           const gradient = context.createRadialGradient(x, y, 0, x, y, radius);
-          gradient.addColorStop(0, `rgba(${kind === 'FIRE' ? '255,245,205' : '55,58,56'},${alpha})`);
-          gradient.addColorStop(0.52, `rgba(${kind === 'FIRE' ? '255,170,80' : '82,80,73'},${alpha * 0.65})`);
-          gradient.addColorStop(1, 'rgba(110,106,96,0)');
+          gradient.addColorStop(0, `rgba(255,255,255,${alpha})`);
+          gradient.addColorStop(.45, `rgba(235,239,242,${alpha * .7})`);
+          gradient.addColorStop(1, 'rgba(225,232,238,0)');
           context.fillStyle = gradient;
           context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
-        });
+        }
       }
       // Canvas is ready now: no first-hit PNG encoding/async image decoding.
       return canvas;
@@ -1129,6 +1424,8 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
     const effectTextures = {
       flash: makeEffectTexture('FLASH'),
       smoke: makeEffectTexture('SMOKE'),
+      smoke2: makeEffectTexture('SMOKE2'),
+      smoke3: makeEffectTexture('SMOKE3'),
       fire: makeEffectTexture('FIRE'),
     };
     // Upload to the existing billboard atlas at scene startup, not on the first
@@ -1214,80 +1511,96 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
     const createInterceptEffect = (key, position) => {
       if (interceptEffectsRef.current.has(key)) return;
       const startedAt = performance.now();
+      if (interceptEffectsRef.current.size >= 8) {
+        const [oldKey, old] = interceptEffectsRef.current.entries().next().value;
+        old.entities.forEach(entity => viewer.entities.remove(entity));
+        interceptEffectsRef.current.delete(oldKey);
+      }
       olsController.impact(key, position);
+      const cameraDistanceM = Cartesian3.distance(viewer.camera.positionWC, position);
+      sensorExposure.flashAt = startedAt;
+      sensorExposure.flashStrength = clamp(1.25 - cameraDistanceM / 110_000, 0.25, 1.2);
       hitTimingRef.current.reconcileMs = 0;
-      const expiresAt = startedAt + INTERCEPT_EFFECT_DURATION_MS;
-      const flash = viewer.entities.add({
-        position,
-        billboard: {
-          image: effectTextures.flash,
-          width: 64,
-          height: 64,
-          scale: new CallbackProperty(() => {
-            const ageMs = performance.now() - startedAt;
-            return ageMs < INTERCEPT_EFFECT_VISUAL_PROFILE.flashDurationMs
-              ? 0.8 + ageMs / INTERCEPT_EFFECT_VISUAL_PROFILE.flashDurationMs * 1.75
-              : 0;
-          }, false),
-          color: new CallbackProperty(() => {
-            const ageMs = performance.now() - startedAt;
-            return Color.WHITE.withAlpha(Math.max(
-              0,
-              1 - ageMs / INTERCEPT_EFFECT_VISUAL_PROFILE.flashDurationMs,
-            ));
-          }, false),
-          disableDepthTestDistance: Number.POSITIVE_INFINITY,
-        },
-      });
-      const smoke = viewer.entities.add({
-        position,
-        billboard: {
-          image: effectTextures.smoke,
-          width: 210,
-          height: 210,
-          scale: new CallbackProperty(() => {
-            const age = clamp((performance.now() - startedAt) / INTERCEPT_EFFECT_DURATION_MS, 0, 1);
-            return 0.5 + age * 2.4;
-          }, false),
-          color: new CallbackProperty(() => {
-            const age = clamp((performance.now() - startedAt) / INTERCEPT_EFFECT_DURATION_MS, 0, 1);
-            const appear = clamp((age - 0.025) / 0.1, 0, 1);
-            return (visualModeRef.current === 'THERMAL'
-              ? new Color(1 - age * 0.75, 1 - age * 0.75, 1 - age * 0.75)
-              : Color.fromCssColorString('#353a39'))
-              .withAlpha(appear * Math.max(0, 0.68 * Math.pow(1 - age, 0.72)));
-          }, false),
-          disableDepthTestDistance: Number.POSITIVE_INFINITY,
-          scaleByDistance: new NearFarScalar(8_000, 1.08, 420_000, 0.42),
-        },
-      });
-      const fire = viewer.entities.add({
-        position,
-        billboard: {
-          image: effectTextures.fire,
-          width: 100,
-          height: 100,
-          scale: new CallbackProperty(() => {
-            const age = clamp((performance.now() - startedAt)
-              / INTERCEPT_EFFECT_VISUAL_PROFILE.fireDurationMs, 0, 1);
-            return 0.45 + age * 1.4;
-          }, false),
-          color: new CallbackProperty(() => {
-            const age = clamp((performance.now() - startedAt)
-              / INTERCEPT_EFFECT_VISUAL_PROFILE.fireDurationMs, 0, 1);
-            return (visualModeRef.current === 'THERMAL' ? Color.WHITE
-              : Color.fromCssColorString('#ffb45a')).withAlpha((1 - age) ** 1.5 * 0.88);
-          }, false),
-          scaleByDistance: new NearFarScalar(8_000, 1.08, 420_000, 0.42),
-        },
-      });
-      interceptEffectsRef.current.set(key, { entities: [flash, smoke, fire], expiresAt });
+      // Triggered by the existing shared contact transition before hiding models.
+      // VFX lifetime is cosmetic; collision timestamps and outcomes are untouched.
+      interceptEffectsRef.current.set(key, createImpactVfx(viewer, position, effectTextures,
+        () => visualModeRef.current === ADVANCED_VISUAL_MODE.THERMAL));
       hitTimingRef.current.vfxMs = performance.now() - startedAt;
       hitTimingRef.current.frameMaxMs = 0;
       hitTimingRef.current.untilMs = performance.now() + 2000;
     };
 
+    const createLaunchEffect = (key, missile) => {
+      if (launchEffects.has(key) || launchEffects.size >= 8) return;
+      const launch = missile.launchWorldPosition ?? getEntityPosition(missile);
+      const pad = Cartesian3.fromDegrees(launch.lng, launch.lat,
+        Math.max(2, (launch.altitudeM ?? 0) - 1));
+      const startedAt = performance.now();
+      const age = () => (performance.now() - startedAt) / 1000;
+      const dynamic = fn => new CallbackProperty(fn, false);
+      const entities = [viewer.entities.add({
+        position: pad,
+        billboard: { image: effectTextures.flash, sizeInMeters: true, width: 64, height: 64,
+          scale: dynamic(() => (18 + 58 * (1 - Math.exp(-age() * 9))) / 64),
+          color: dynamic(() => (visualModeRef.current === ADVANCED_VISUAL_MODE.THERMAL
+            ? Color.WHITE : new Color(1, .62, .28))
+            .withAlpha(Math.exp(-age() / .24) * .9)),
+          disableDepthTestDistance: 0 },
+      })];
+      for (let index = 0; index < 18; index++) {
+        const angle = index * 2.39996323;
+        entities.push(viewer.entities.add({
+          position: new CallbackPositionProperty(() => Cartesian3.fromDegrees(
+            launch.lng + Math.cos(angle) * age() * (.00002 + (index % 5) * .000009),
+            launch.lat + Math.sin(angle) * age() * (.00002 + (index % 5) * .000009),
+            Math.max(2, (launch.altitudeM ?? 0) + age() * 3)), false),
+          billboard: { image: effectTextures.smoke, sizeInMeters: true,
+            width: 64, height: 64,
+            rotation: angle,
+            scale: dynamic(() => (7 + age() * (18 + (index % 5) * 5)) / 64),
+            color: dynamic(() => (visualModeRef.current === ADVANCED_VISUAL_MODE.THERMAL
+              ? new Color(.35 + .65 * Math.exp(-age() * 3), .35 + .65 * Math.exp(-age() * 3), .35 + .65 * Math.exp(-age() * 3)) : new Color(.69, .66, .6))
+              .withAlpha(clamp(1 - age() / 3.2, 0, 1) * .52)),
+            disableDepthTestDistance: 0 },
+        }));
+      }
+      for (let index = 0; index < 28; index++) {
+        const angle = index * 2.399963;
+        const speed = 7 + (index % 7) * 3;
+        entities.push(viewer.entities.add({
+          position: new CallbackPositionProperty(() => {
+            const t = Math.min(age(), 1.2);
+            return Cartesian3.fromDegrees(launch.lng + Math.cos(angle) * t * speed / 71000,
+              launch.lat + Math.sin(angle) * t * speed / 111000,
+              Math.max((launch.altitudeM ?? 0) + .3,
+                (launch.altitudeM ?? 0) + 2 + t * (5 + index % 6) - 7 * t * t));
+          }, false),
+          billboard: { image: effectTextures.flash, width: 64, height: 64, sizeInMeters: true,
+            scale: (.25 + (index % 4) * .12) / 64,
+            color: dynamic(() => (visualModeRef.current === ADVANCED_VISUAL_MODE.THERMAL
+              ? Color.WHITE : new Color(1, .78, .43)).withAlpha(clamp(1 - age() / 1.2, 0, 1))),
+            disableDepthTestDistance: 0 },
+        }));
+      }
+      launchEffects.set(key, { entities, position: pad, startedAt, expiresAt: startedAt + 3400 });
+      const cameraDistanceM = Cartesian3.distance(viewer.camera.positionWC, pad);
+      if (cameraDistanceM < 20_000) {
+        sensorExposure.flashAt = startedAt;
+        sensorExposure.flashStrength = clamp(1 - cameraDistanceM / 20_000, 0, 1) * .85;
+      }
+    };
+
+    const coldLaunchVfx = createColdLaunchVfx(viewer, effectTextures, {
+      getVisualMode: () => visualModeRef.current,
+      getPose: key => sampleVisualState(visualStates, key, visualTimeRef.current),
+      onIgnition: (position, now) => {
+        sensorExposure.flashAt = now;
+        sensorExposure.flashStrength = .7 * clamp(1 - Cartesian3.distance(
+          viewer.camera.positionWC, position) / 20_000, 0, 1);
+      },
+    });
     const removePlume = key => {
+      coldLaunchVfx.remove(key);
       const plume = plumeEntitiesRef.current.get(key);
       if (!plume) return;
       plume.forEach(entity => {
@@ -1300,109 +1613,126 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
     };
 
     const updatePlume = (key, simulationEntity, currentPosition, presentation, emitting, visual) => {
-      const plumeProfile = getMissilePlumeProfile(simulationEntity);
-      if (!plumeProfile) {
-        removePlume(key);
-        return;
-      }
-      const exhaustPosition = getVisualExhaustPosition(
-        visual,
-        currentPosition,
-        presentation,
-      );
+      coldLaunchVfx.update(key, simulationEntity, visual, presentation);
+      const plumeProfile = getMissilePlumeProfile(simulationEntity.coldLaunchPhase
+        ? { ...simulationEntity, motorPhase: visual.kinematics?.motorPhase ?? simulationEntity.motorPhase }
+        : simulationEntity);
+      const smokeProfile = getMissileSmokeProfile(simulationEntity);
       const now = performance.now();
-      const previousSmokeSample = lastSmokeSample.get(key) ?? -Infinity;
-      if (emitting && now - previousSmokeSample >= MISSILE_TRAIL_VISUAL_PROFILE.advancedSampleIntervalMs
-        && smokePuffs.length < MISSILE_TRAIL_VISUAL_PROFILE.advancedMaxPuffs) {
-        lastSmokeSample.set(key, now);
-        const physics = getInterceptorSpec(simulationEntity.interceptorSpecId)?.gameplayPhysics;
-        const thrustToMass = (physics?.referenceThrustN ?? 8_000)
-          / Math.max(physics?.massKg ?? 120, 1);
-        const puffSize = clamp(48 + thrustToMass * 0.34, 55, 105) * plumeProfile.size;
-        const createdAt = now;
-        const puff = viewer.entities.add({
-          position: exhaustPosition,
-          billboard: {
-            image: effectTextures.smoke,
-            width: puffSize,
-            height: puffSize,
-            scale: new CallbackProperty(() => {
-              const age = clamp((performance.now() - createdAt)
-                / MISSILE_TRAIL_VISUAL_PROFILE.lifetimeMs, 0, 1);
-              return 0.55 + age * 1.65;
-            }, false),
-            color: new CallbackProperty(() => {
-              const age = clamp((performance.now() - createdAt)
-                / MISSILE_TRAIL_VISUAL_PROFILE.lifetimeMs, 0, 1);
-              return Color.fromCssColorString('#a0a39d')
-                .withAlpha(Math.pow(1 - age, 1.25) * plumeProfile.opacity);
-            }, false),
-            disableDepthTestDistance: Number.POSITIVE_INFINITY,
-            scaleByDistance: new NearFarScalar(
-              MISSILE_TRAIL_VISUAL_PROFILE.advancedNearDistanceM,
-              MISSILE_TRAIL_VISUAL_PROFILE.closeScale,
-              MISSILE_TRAIL_VISUAL_PROFILE.advancedFarDistanceM,
-              MISSILE_TRAIL_VISUAL_PROFILE.farScale,
-            ),
-            distanceDisplayCondition: new DistanceDisplayCondition(0, 260_000),
-          },
-        });
-        smokePuffs.push({ entity: puff, createdAt });
-      }
       let plume = plumeEntitiesRef.current.get(key);
-      if (!plume) {
-        const readExhaust = () => {
+      if (!plumeProfile && !plume) return;
+      if (plumeProfile && simulationEntity.launchWorldPosition
+        && (simulationEntity.flightTime ?? Infinity) < .28) createLaunchEffect(key, simulationEntity);
+      const acceleration = Math.max(0, simulationEntity.motorAccelerationMps2 ?? 45);
+      const thrustFactor = clamp(.7 + acceleration / 125, .7, 1.45);
+      const targetIntensity = plumeProfile ? plumeProfile.heat * thrustFactor : 0;
+      if (plumeProfile && !plume) {
+        const readPose = () => {
           const meta = entityMetaRef.current.get(key);
-          const pose = (meta?.holdUntilMs ? meta.visualState : sampleVisualState(visualStates,
+          return (meta?.holdUntilMs ? meta.visualState : sampleVisualState(visualStates,
             key, Math.min(visualTimeRef.current, meta?.visualImpact?.time ?? Infinity))) ?? visual;
-          return getVisualExhaustPosition(pose, pose.worldPosition, presentation);
         };
-        plume = [
-          viewer.entities.add({
-            position: new CallbackPositionProperty((_time, result) => Cartesian3.clone(
-              readExhaust(), result), false),
-            point: {
-              pixelSize: 8,
-              color: Color.fromCssColorString('#fff2b0').withAlpha(0.95),
-              outlineColor: Color.fromCssColorString('#ff7b38').withAlpha(0.7),
-              outlineWidth: 3,
-              disableDepthTestDistance: Number.POSITIVE_INFINITY,
-              distanceDisplayCondition: new DistanceDisplayCondition(0, 240_000),
-            },
-          }),
-          viewer.entities.add({
-            polyline: {
-              positions: [currentPosition, currentPosition],
-              width: 3,
-              material: Color.fromCssColorString('#f0f3e8').withAlpha(0.28),
-              depthFailMaterial: Color.fromCssColorString('#ff9b56').withAlpha(0.16),
-              arcType: ArcType.NONE,
-              distanceDisplayCondition: new DistanceDisplayCondition(0, 180_000),
-            },
-          }),
-        ];
-        plume.readExhaust = readExhaust;
+        // Every lobe reads the same buffered pose as the GLB and camera.
+        plume = Array.from({ length: 12 }, (_, index) => viewer.entities.add({
+          position: new CallbackPositionProperty((_time, result) => {
+            const pose = readPose();
+            const tail = getVisualExhaustPosition(pose, pose.worldPosition, presentation);
+            const forward = getVisualBodyForward(pose);
+            return Cartesian3.subtract(tail, Cartesian3.multiplyByScalar(forward,
+              index * .30 * (plume?.size ?? 1) * (1 + .06 * Math.sin(performance.now() * .038 + index * 1.7)), new Cartesian3()), result ?? new Cartesian3());
+          }, false),
+          billboard: { image: effectTextures.flash, sizeInMeters: true,
+            width: 64, height: 64, disableDepthTestDistance: 0 },
+        }));
+        plume.size = plumeProfile.size;
+        plume.intensity = targetIntensity * .35;
+        plume.lastAt = now;
         plumeEntitiesRef.current.set(key, plume);
       }
-      plume[0].point.pixelSize = plumeProfile.glowPixels;
-      plume[1].polyline.width = plumeProfile.lineWidth;
-      const history = trailHistoryRef.current.get(key);
-      const previous = history?.at(-2) ?? history?.at(-1);
-      const tailPosition = previous
-        ? getVisualExhaustPosition(
-          visual,
-          Cartesian3.fromDegrees(previous.lng, previous.lat, previous.altitudeM),
-          presentation,
-        )
-        : exhaustPosition;
-      // Keep dynamic geometry: replacing a static property every frame can
-      // continually cancel Cesium's asynchronous polyline construction.
-      plume.positions = [tailPosition, exhaustPosition];
-      if (!(plume[1].polyline.positions instanceof CallbackProperty)) {
-        plume[1].polyline.positions = new CallbackProperty(() => [
-          plume.positions[0], plume.readExhaust(),
-        ], false);
+      const dt = clamp((now - plume.lastAt) / 1000, 0, .1);
+      plume.lastAt = now;
+      plume.intensity += (targetIntensity - plume.intensity)
+        * (1 - Math.exp(-dt / (targetIntensity > plume.intensity ? .11 : .24)));
+      if (!plumeProfile && plume.intensity < .025) { removePlume(key); return; }
+      if (plumeProfile) plume.size += (plumeProfile.size - plume.size)
+        * (1 - Math.exp(-dt / .16));
+      const exhaustPosition = getVisualExhaustPosition(visual, currentPosition, presentation);
+      const previousSmokeSample = lastSmokeSample.get(key) ?? -Infinity;
+      if (emitting && plumeProfile && plume.intensity > .08
+        && now - previousSmokeSample >= MISSILE_TRAIL_VISUAL_PROFILE.advancedSampleIntervalMs / smokeProfile.emissionRateScale) {
+        lastSmokeSample.set(key, now);
+        const previous = smokeStrands.get(key);
+        const span = previous ? Cartesian3.distance(previous.position, exhaustPosition) : 0;
+        const smokePower = clamp(plume.intensity, .35, 1.35);
+        // Fill the travelled segment with overlapping soft volumes, never a polyline.
+        // Cap interpolation after discontinuities rather than drawing a cross-map trail.
+        const count = Math.min(16, Math.max(1, Math.ceil(span / ((6 + 3 / smokePower) / smokeProfile.emissionRateScale))));
+        const origin = previous && span < 500 ? previous.position : exhaustPosition;
+        const sequence = previous?.sequence ?? 0;
+        for (let sample = 0; sample < count; sample++) {
+          if (smokePuffs.length >= MISSILE_TRAIL_VISUAL_PROFILE.advancedMaxPuffs) {
+            viewer.entities.remove(smokePuffs.shift().entity);
+          }
+          const seed = sequence + sample;
+          const phase = seed * 2.399963;
+          const center = Cartesian3.lerp(origin, exhaustPosition, (sample + 1) / count, new Cartesian3());
+          const up = Cartesian3.normalize(center, new Cartesian3());
+          const side = Cartesian3.cross(up, getVisualBodyForward(visual), new Cartesian3());
+          if (Cartesian3.magnitudeSquared(side) < .001) Cartesian3.clone(Cartesian3.UNIT_X, side);
+          Cartesian3.normalize(side, side);
+          const size = smokeProfile.widthScale * (17 + smokePower * 8) * (.8 + (seed % 7) * .065);
+          const createdAt = now;
+          const age = () => clamp((performance.now() - createdAt)
+            / smokeProfile.lifetimeMs, 0, 1);
+          const puff = viewer.entities.add({
+            position: new CallbackPositionProperty((_time, result) => {
+              const t = age();
+              const drift = Math.sin(phase + t * 3.5) * (1.5 + t * 14) * smokePower * smokeProfile.turbulenceScale;
+              const offset = Cartesian3.multiplyByScalar(side, drift, new Cartesian3());
+              Cartesian3.add(offset, Cartesian3.multiplyByScalar(up,
+                t * 14 + Math.cos(phase + t * 2) * t * 5, new Cartesian3()), offset);
+              return Cartesian3.add(center, offset, result ?? new Cartesian3());
+            }, false),
+            billboard: {
+              image: [effectTextures.smoke, effectTextures.smoke2, effectTextures.smoke3][seed % 3],
+              width: size, height: size * (.85 + (seed % 4) * .1), sizeInMeters: true,
+              rotation: new CallbackProperty(() => phase + age() * ((seed % 2) ? .7 : -.6), false),
+              scale: new CallbackProperty(() => .6 + Math.pow(age(), smokeProfile.expansionExponent) * 3.1 * smokeProfile.expansionScale, false),
+              color: new CallbackProperty(() => {
+                const t = age();
+                const thermal = visualModeRef.current === ADVANCED_VISUAL_MODE.THERMAL;
+                const heat = .28 + .72 * Math.exp(-t * 6);
+                const night = environment.isEnabled() && useEnvironmentSettings.getState().preset === 'NIGHT';
+                const distance = Cartesian3.distance(viewer.camera.positionWC, center);
+                const distantHaze = environment.isEnabled() ? 1 - Math.exp(-distance / 42000) : 0;
+                const shade = thermal ? new Color(heat, heat, heat)
+                  : night ? new Color(.27 + (seed % 3) * .025, .31 + (seed % 3) * .025, .36 + (seed % 3) * .025)
+                    : new Color(.67 + (seed % 3) * .055 - distantHaze * .10,
+                      .68 + (seed % 3) * .05 - distantHaze * .07,
+                      .67 + (seed % 3) * .05 - distantHaze * .06);
+                return shade.withAlpha(Math.pow(1 - t, smokeProfile.fadeExponent) * plumeProfile.opacity * smokeProfile.opacityScale
+                  * smokePower * (.65 + (seed % 5) * .055) * (night ? .65 : 1)
+                  * (1 - distantHaze * .35));
+              }, false),
+              disableDepthTestDistance: 0,
+              distanceDisplayCondition: new DistanceDisplayCondition(0, 260_000),
+            },
+          });
+          smokePuffs.push({ entity: puff, createdAt, lifetimeMs: smokeProfile.lifetimeMs });
+        }
+        smokeStrands.set(key, { position: Cartesian3.clone(exhaustPosition), at: now,
+          sequence: sequence + count });
       }
+      plume.forEach((entity, index) => {
+        const flicker = 1 + .10 * Math.sin(now * .041 + index * 2.1)
+          + .045 * Math.sin(now * .073 - index);
+        const diameter = (index === 0 ? 1.0 : Math.max(1.15, 2.6 - index * .13)) * plume.size * flicker
+          * (.52 + plume.intensity * .48);
+        entity.billboard.scale = diameter / 64;
+        entity.billboard.color = (visualModeRef.current === ADVANCED_VISUAL_MODE.THERMAL
+          ? Color.WHITE : Color.fromCssColorString(index < 3 ? '#ffffff' : '#ffc579'))
+          .withAlpha((1 - index / 14) * clamp(plume.intensity * 1.8, 0, 1));
+      });
     };
 
     const addEntity = (kind, simulationEntity) => {
@@ -1426,7 +1756,11 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
       const modelAvailability = presentation.modelUri
         ? modelAvailabilityRef.current.get(presentation.modelUri)
         : null;
-      const useModel = Boolean(presentation.modelUri) && modelAvailability !== 'FAILED';
+      const resolvedAsset = resolveAdvancedAssetPresentation(presentation, modelAvailability);
+      const modelUri = presentation.separatedBodyModelUri
+        && simulationEntity.motorPhase !== 'BOOST'
+        ? presentation.separatedBodyModelUri : resolvedAsset.modelUri;
+      const useModel = resolvedAsset.renderType === 'MODEL';
       const usePlaceholder = kind === ADVANCED_ENTITY_KIND.CONTROLLABLE && !useModel;
       const dimensions = presentation.placeholderDimensionsM;
       pushVisualSnapshot(visualStates, key, positionData, getKinematics(simulationEntity),
@@ -1447,8 +1781,8 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
         // Cesium actually reads it; the camera uses the same memoized result.
         ...createVisualPoseProperties(readVisual, presentation),
         model: useModel ? {
-          uri: presentation.modelUri,
-          scale: presentation.baseVisualScale,
+          uri: modelUri,
+          scale: resolvedAsset.uniformScale,
           minimumPixelSize: presentation.minPixelSize,
           maximumScale: presentation.maxVisualScale,
           distanceDisplayCondition: new DistanceDisplayCondition(
@@ -1456,7 +1790,7 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
             presentation.lodFarDistanceM,
           ),
           runAnimations: false,
-          shadows: 0,
+          shadows: new CallbackProperty(() => environment.isEnabled() ? 1 : 0, false),
         } : undefined,
         box: usePlaceholder ? {
           dimensions: new Cartesian3(dimensions.length, dimensions.width, dimensions.height),
@@ -1464,8 +1798,8 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
           outline: true,
           outlineColor: Color.fromCssColorString('#1a5b52'),
         } : undefined,
-        billboard: !usePlaceholder ? {
-          image: presentation.fallbackBillboard,
+        billboard: !usePlaceholder && !useModel ? {
+          image: resolvedAsset.fallbackAsset,
           width: presentation.billboardWidth,
           height: presentation.billboardHeight,
           heightReference: HeightReference.NONE,
@@ -1501,6 +1835,10 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
       entityMetaRef.current.set(key, { kind, id: simulationEntity.id, presentation,
         targetId: simulationEntity.targetId ?? null });
       ensureModelAvailability(presentation);
+      if (presentation.separatedBodyModelUri) {
+        ensureModelAvailability({ modelUri: presentation.separatedBodyModelUri });
+        ensureModelAvailability({ modelUri: presentation.boosterModelUri });
+      }
     };
 
     const reconcileEntities = () => {
@@ -1516,11 +1854,6 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
         const key = makeSelectionKey(ADVANCED_ENTITY_KIND.INTERCEPTOR, entity.id);
         activeKeys.add(key);
         addEntity(ADVANCED_ENTITY_KIND.INTERCEPTOR, entity);
-      });
-      state.searchRadars.forEach(entity => {
-        const key = makeSelectionKey(ADVANCED_ENTITY_KIND.SEARCH_RADAR, entity.id);
-        activeKeys.add(key);
-        addEntity(ADVANCED_ENTITY_KIND.SEARCH_RADAR, entity);
       });
       state.controllableAirEntities.forEach(entity => {
         const key = makeSelectionKey(ADVANCED_ENTITY_KIND.CONTROLLABLE, entity.id);
@@ -1565,9 +1898,7 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
             fillColor: Color.fromCssColorString('#ffe3de'),
             outlineColor: Color.fromCssColorString('#071014'),
             outlineWidth: 3,
-            showBackground: true,
-            backgroundColor: Color.fromCssColorString('#071014').withAlpha(0.72),
-            backgroundPadding: new Cartesian2(6, 4),
+            showBackground: false,
             pixelOffset: new Cartesian2(14, -18),
             scaleByDistance: new NearFarScalar(500, 1, 120_000, 0.8),
             distanceDisplayCondition: new DistanceDisplayCondition(0, 180_000),
@@ -1664,9 +1995,18 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
         interceptEffectsRef.current.delete(effectKey);
       }
       const smokeNow = performance.now();
+      for (const [key, effect] of launchEffects) {
+        if (smokeNow < effect.expiresAt) continue;
+        effect.entities.forEach(entity => viewer.entities.remove(entity));
+        launchEffects.delete(key);
+      }
+      for (const [key, strand] of smokeStrands) {
+        if (smokeNow - strand.at > MISSILE_TRAIL_VISUAL_PROFILE.advancedSmokeLifetimeMs)
+          smokeStrands.delete(key);
+      }
       for (let index = smokePuffs.length - 1; index >= 0; index -= 1) {
         if (smokeNow - smokePuffs[index].createdAt
-          < MISSILE_TRAIL_VISUAL_PROFILE.lifetimeMs) continue;
+          < smokePuffs[index].lifetimeMs) continue;
         viewer.entities.remove(smokePuffs[index].entity);
         smokePuffs.splice(index, 1);
       }
@@ -1679,19 +2019,40 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
     const updateScene = () => {
       if (!activeRef.current) return;
       const now = performance.now();
+      const simulationTime = useEngine.getState().simulationTime;
+      for (const [id, debris] of asterBoosterDebris) {
+        if (updateAsterBoosterDebris(debris, simulationTime,
+          visualModeRef.current === ADVANCED_VISUAL_MODE.THERMAL)) continue;
+        viewer.entities.remove(debris.entity);
+        asterBoosterDebris.delete(id);
+      }
+      coldLaunchVfx.prune(now);
       const state = useEngine.getState();
       const thermalActive = visualModeRef.current === ADVANCED_VISUAL_MODE.THERMAL;
-      cameraEffect.enabled = thermalActive || olsFeedModeRef.current || cameraModeRef.current === CAMERA_MODE.FPV;
-      if (previousThermal !== thermalActive) {
+      const lowLight = visualModeRef.current === ADVANCED_VISUAL_MODE.LOW_LIGHT;
+      const frameDelta = sensorExposure.lastFrameAt
+        ? clamp((now - sensorExposure.lastFrameAt) / 1000, 0, .1) : 1 / 60;
+      sensorExposure.lastFrameAt = now;
+      let visibleHeatLoad = 0;
+      cameraEffect.enabled = thermalActive || lowLight || olsFeedModeRef.current
+        || cameraModeRef.current === CAMERA_MODE.FPV
+        || now - sensorExposure.flashAt < 1500;
+      const environmentMode = thermalActive ? 'THERMAL' : lowLight ? 'LOW-LIGHT' : 'DAY';
+      const environmentActive = !olsFeedModeRef.current && !fpvFeedModeRef.current
+        && cameraModeRef.current !== CAMERA_MODE.FPV && !thermalActive;
+      environment.update(environmentActive, now);
+      if (environmentActive) previousEnvironmentMode = null;
+      if (!environmentActive && previousEnvironmentMode !== environmentMode) {
         // Semantic presentation: cold environment, bright airborne surfaces.
         // No sensor/detection changes and no depth-test bypass.
-        viewer.imageryLayers.get(0).brightness = thermalActive ? 0.28 : 1;
-        viewer.scene.skyAtmosphere.brightnessShift = thermalActive ? -0.8 : 0;
-        viewer.scene.skyAtmosphere.show = !thermalActive;
-        if (viewer.scene.skyBox) viewer.scene.skyBox.show = !thermalActive;
-        viewer.scene.backgroundColor = thermalActive ? Color.fromCssColorString('#242424') : Color.BLACK;
-        viewer.scene.globe.showGroundAtmosphere = !thermalActive;
-        previousThermal = thermalActive;
+        viewer.imageryLayers.get(0).brightness = thermalActive ? 0.7 : lowLight ? 0.27 : 1;
+        viewer.scene.skyAtmosphere.brightnessShift = thermalActive ? -0.8 : lowLight ? -0.85 : 0;
+        viewer.scene.skyAtmosphere.show = !thermalActive && !lowLight;
+        if (viewer.scene.skyBox) viewer.scene.skyBox.show = !thermalActive && !lowLight;
+        viewer.scene.backgroundColor = thermalActive ? Color.fromCssColorString('#242424')
+          : lowLight ? Color.fromCssColorString('#101820') : Color.BLACK;
+        viewer.scene.globe.showGroundAtmosphere = !thermalActive && !lowLight;
+        previousEnvironmentMode = environmentMode;
       }
       const targetMap = new Map(state.airTargets.map(entity => [entity.id, entity]));
       const missileMap = new Map(state.missiles.map(entity => [entity.id, entity]));
@@ -1700,7 +2061,10 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
         state.controllableAirEntities.map(entity => [entity.id, entity]),
       );
       const trackMap = new Map(state.tracks.map(track => [track.id, track]));
-      for (const [key, cesiumEntity] of cesiumEntitiesRef.current) {
+      const placeLabel = createLabelLayout(viewer.scene.canvas.clientWidth, viewer.scene.canvas.clientHeight);
+      const orderedEntities = [...cesiumEntitiesRef.current].sort(([a], [b]) =>
+        Number(b === selectedKeyRef.current) - Number(a === selectedKeyRef.current));
+      for (const [key, cesiumEntity] of orderedEntities) {
         const meta = entityMetaRef.current.get(key);
         if (!meta) continue;
         if (meta.visualImpact && (meta.holdUntilMs || visualTimeRef.current >= meta.visualImpact.time)) {
@@ -1748,38 +2112,22 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
         const displayed = visual.position;
         const position = visual.worldPosition;
         const kinematics = visual.kinematics;
+        if (meta.kind === ADVANCED_ENTITY_KIND.INTERCEPTOR) {
+          const profile = getMissilePlumeProfile(simulationEntity);
+          if (profile) {
+            const rangeM = Cartesian3.distance(viewer.camera.positionWC, position);
+            visibleHeatLoad = Math.max(visibleHeatLoad,
+              profile.heat * clamp(1 - rangeM / (olsFeedModeRef.current ? 90_000 : 18_000), 0, 1));
+          }
+        }
         meta.visualState = visual;
         if (meta.kind === ADVANCED_ENTITY_KIND.SEARCH_RADAR) {
           const radar = simulationEntity.components?.radar;
-          let beam = radarBeamEntities.get(key);
-          if (overlaysRef.current.radarBeams && !beam) {
-            beam = createRadarBeam(meta.id);
-            radarBeamEntities.set(key, beam);
-          } else if (!overlaysRef.current.radarBeams && beam) {
-            viewer.entities.remove(beam);
-            viewer.entities.remove(beam.sectorEntity);
-            radarBeamEntities.delete(key);
-            beam = null;
-          }
-          if (beam && radar?.scanState) {
-            const rangeKm = simulationEntity.radarRangeKm ?? simulationEntity.nominalRangeKm ?? 180;
-            const azimuth = radar.scanState.currentAzimuth;
-            const halfWidth = Math.max(1, radar.scanState.beamWidthDeg / 2);
-            const origin = Cartesian3.fromDegrees(displayed.lng, displayed.lat, displayed.altitudeM + 25);
-            const edgePoints = [azimuth - halfWidth, azimuth, azimuth + halfWidth].map(angle => {
-              const endpoint = getDestinationPoint(displayed.lat, displayed.lng, angle, rangeKm);
-              return Cartesian3.fromDegrees(endpoint.lng, endpoint.lat, 25);
-            });
-            const beamPoints = edgePoints.flatMap(endpoint => [origin, endpoint]);
-            beam.updateScanPositions(beamPoints);
-            beam.updateSectorPositions([origin, edgePoints[0], edgePoints[2]]);
-            beam.show = !olsFeedModeRef.current && simulationEntity.operational !== false
-              && !fpvFeedModeRef.current;
-            beam.sectorEntity.show = beam.show;
-          } else if (beam) {
-            beam.show = false;
-            beam.sectorEntity.show = false;
-          }
+          updateGroundRadarSweep({ key, radar, lat: displayed.lat, lng: displayed.lng,
+            rangeKm: simulationEntity.radarRangeKm ?? simulationEntity.nominalRangeKm,
+            headingDeg: simulationEntity.radarHeading ?? radar?.heading ?? 0,
+            sectorDeg: simulationEntity.radarSector ?? 360,
+            operational: simulationEntity.operational !== false });
         }
         if (cesiumEntity.billboard && !meta.presentation.billboardDimensionsM) {
           cesiumEntity.billboard.rotation = CesiumMath.toRadians(
@@ -1818,10 +2166,17 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
           cesiumEntity.billboard.show = !hideOwnModel
             && !(fpvFeedModeRef.current && meta.kind === ADVANCED_ENTITY_KIND.SEARCH_RADAR);
         }
+        if (cesiumEntity.model) {
+          cesiumEntity.model.minimumPixelSize = olsFeedModeRef.current ? 0 : meta.presentation.minPixelSize;
+          cesiumEntity.model.maximumScale = olsFeedModeRef.current
+            ? meta.presentation.baseVisualScale : meta.presentation.maxVisualScale;
+        }
         const heatTrace = thermalTrailEntities.get(key);
         if (heatTrace) {
           // Anchor is a lazy property sharing the GLB's buffered pose.
-          heatTrace.hotSpot.show = thermalActive && !hideOwnModel;
+          const engineHot = meta.kind !== ADVANCED_ENTITY_KIND.INTERCEPTOR
+            || Boolean(getMissilePlumeProfile(simulationEntity));
+          heatTrace.hotSpot.show = thermalActive && engineHot && !hideOwnModel;
           heatTrace.segments.forEach(segment => {
             segment.show = overlaysRef.current.thermalTraces && thermalActive && !hideOwnModel && segment.show;
           });
@@ -1831,20 +2186,27 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
           fpvAttitudeRef.current.style.transform = `translate(-50%, calc(-50% + ${clamp(kinematics.pitchDeg, -25, 25)}px)) rotate(${-kinematics.rollDeg}deg)`;
         }
         if (cesiumEntity.label) {
-          const detail = selected
-            ? `\n${simulationEntity.id} · ALT ${(displayed.altitudeM / 1000).toFixed(1)} KM · SPD ${Math.round(kinematics.speedKmh)}`
-            : `\n${simulationEntity.id}`;
-          const seekerDetail = meta.kind === ADVANCED_ENTITY_KIND.INTERCEPTOR
-            && (overlaysRef.current.seekerLabels || overlaysRef.current.seekerState)
-            && simulationEntity.seeker
-            ? `\n${simulationEntity.seeker.seekerType} · ${simulationEntity.seeker.state}`
-              + (simulationEntity.guidanceSource ? ` · ${simulationEntity.guidanceSource}` : '') : '';
-          cesiumEntity.label.text = `${meta.presentation.displayName}${detail}${seekerDetail}`;
-          cesiumEntity.label.show = !fpvFeedModeRef.current && !olsFeedModeRef.current && meta.kind !== ADVANCED_ENTITY_KIND.TARGET
-            && !controlledOwnModel;
-          cesiumEntity.label.showBackground = selected && !controlledOwnModel;
-          cesiumEntity.label.backgroundColor = Color.fromCssColorString('#071014')
-            .withAlpha(selected ? 0.42 : 0.08);
+          const assigned = targetMap.get(simulationEntity.targetId);
+          const targetPose = assigned && entityMetaRef.current.get(
+            makeSelectionKey(ADVANCED_ENTITY_KIND.TARGET, assigned.id))?.visualState;
+          const labelText = compactWorldLabel({ name: meta.presentation.displayName,
+            id: simulationEntity.id, selected,
+            distanceM: Cartesian3.distance(viewer.camera.positionWC, position),
+            speedMps: kinematics.speedKmh / 3.6,
+            altitudeM: visual.position.altitudeM,
+            rangeKm: targetPose ? Cartesian3.distance(position, targetPose.worldPosition) / 1000 : null,
+            seeker: simulationEntity.seeker, phase: simulationEntity.flightPhase,
+            language: useGameStore.getState().language });
+          const seekerDetail = (overlaysRef.current.seekerLabels || overlaysRef.current.seekerState)
+            && simulationEntity.seeker ? `\n${simulationEntity.guidanceSource ?? ''}` : '';
+          cesiumEntity.label.text = labelText + seekerDetail;
+          cesiumEntity.label.show = !fpvFeedModeRef.current && !olsFeedModeRef.current
+            && (meta.kind !== ADVANCED_ENTITY_KIND.TARGET || (selected && overlaysRef.current.trackLabels)) && !controlledOwnModel
+            && placeLabel(SceneTransforms.worldToWindowCoordinates(viewer.scene, position), labelText);
+          cesiumEntity.label.font = '11px monospace';
+          cesiumEntity.label.pixelOffset = new Cartesian2(0, -42);
+          cesiumEntity.label.showBackground = false;
+          cesiumEntity.label.backgroundColor = Color.fromCssColorString('#071014').withAlpha(0.28);
         }
         if (meta.kind === ADVANCED_ENTITY_KIND.INTERCEPTOR) {
           const seeker = simulationEntity.seeker;
@@ -1934,6 +2296,24 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
           updatePlume(key, simulationEntity, position, meta.presentation, state.timeScale > 0, visual);
         }
       }
+      const activeBatteryRadarKeys = new Set();
+      state.batteries.forEach(battery => {
+        const radar = battery.components?.radar;
+        if (!radar || !Number.isFinite(radar.lat) || !Number.isFinite(radar.lng)) return;
+        const key = `battery:${battery.id}`;
+        activeBatteryRadarKeys.add(key);
+        updateGroundRadarSweep({ key, radar, lat: radar.lat, lng: radar.lng,
+          rangeKm: battery.radarRangeKm, headingDeg: battery.radarHeading,
+          sectorDeg: battery.radarSector, operational: radar.operational !== false });
+      });
+      for (const [key, beam] of radarBeamEntities) {
+        if (!key.startsWith('battery:') || activeBatteryRadarKeys.has(key)) continue;
+        viewer.entities.remove(beam);
+        viewer.entities.remove(beam.sectorEntity);
+        radarBeamEntities.delete(key);
+      }
+      sensorExposure.heat += (visibleHeatLoad - sensorExposure.heat)
+        * (1 - Math.exp(-frameDelta / (visibleHeatLoad > sensorExposure.heat ? .12 : 1.2)));
 
       const controlledEntity = controllableMap.get(state.controlledControllableEntityId);
       const controlledMeta = controlledEntity
@@ -1983,31 +2363,35 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
         const displayName = track.identifiedModelId
           ? getTargetDisplayName(track.identifiedModelId)
           : track.identifiedType ?? track.classifiedType ?? 'AIR TRACK';
-        const labelData = formatTrackLabelData(presentedTrack, distanceKm);
+
         const sensorSourceLine = overlaysRef.current.sensorSource
           ? `\nSENSOR ${track.lastMeasurementSensorId ?? track.sourceRadarId ?? '—'}` : '';
         const networkOwnerLine = overlaysRef.current.networkOwner
           ? `\nOWNER ${track.sourceRadarId ?? track.bestSensorId ?? '—'}` : '';
-        cue.entity.label.text = `${selected ? '◆ ' : ''}${formatTrackCesiumLabel(
-          presentedTrack,
-          distanceKm,
-          displayName,
-        )}${sensorSourceLine}${networkOwnerLine}`;
+        const compactLabel = compactWorldLabel({ name: displayName, id: trackId, selected,
+          distanceM: (distanceKm ?? Infinity) * 1000, speedMps: track.reportedSpeedKmh / 3.6,
+          rangeKm: distanceKm, altitudeM: track.reportedAltitudeM,
+          language: useGameStore.getState().language });
+        cue.entity.label.text = overlaysRef.current.debug ? formatTrackCesiumLabel(presentedTrack, distanceKm, displayName,
+          useGameStore.getState().language)
+          : `${compactLabel}${sensorSourceLine}${networkOwnerLine}`;
+        cue.entity.label.show = placeLabel(SceneTransforms.worldToWindowCoordinates(viewer.scene, trackPosition),
+          cue.entity.label.text.getValue());
+        cue.entity.label.font = '11px monospace';
         cue.entity.label.fillColor = Color.fromCssColorString(
           visualModeRef.current === ADVANCED_VISUAL_MODE.THERMAL
             ? '#ffffff' : selected ? '#ffffff' : '#ffe3de',
         );
         cue.entity.label.backgroundColor = Color.fromCssColorString(
           selected ? '#18312f' : '#071014',
-        ).withAlpha(selected ? 0.9 : 0.72);
+        ).withAlpha(selected ? 0.3 : 0.12);
         cue.entity.point.pixelSize = selected ? 11 : 7;
         cue.entity.point.color = Color.fromCssColorString(
           visualModeRef.current === ADVANCED_VISUAL_MODE.THERMAL
             ? '#fff6c9' : selected ? '#b9fff1' : '#ff9f91',
         ).withAlpha(selected ? 1 : 0.86);
         cue.entity.label.scale = 1;
-        cue.entity.ellipsoid.show = overlaysRef.current.trackUncertainty
-          || (selected && labelData.approximate);
+        cue.entity.ellipsoid.show = overlaysRef.current.trackUncertainty;
         const horizontalUncertainty = Math.max(10, track.positionUncertaintyM ?? 10);
         const verticalUncertainty = Math.max(10, track.altitudeUncertaintyM ?? 10);
         cue.entity.ellipsoid.radii = new Cartesian3(horizontalUncertainty,
@@ -2032,6 +2416,9 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
           viewer.clock.currentTime,
         )
         : null;
+      const eventPosition = heldMeta?.holdUntilMs && heldMeta.visualImpact?.eventPosition;
+      const contactPosition = eventPosition ? Cartesian3.fromDegrees(eventPosition.lng,
+        eventPosition.lat, eventPosition.altitudeM) : null;
       const altitudeReference = altitudeReferenceRef.current;
       const guidanceDebug = guidanceDebugEntitiesRef.current;
       if (guidanceDebug) Object.values(guidanceDebug).forEach(marker => {
@@ -2093,6 +2480,7 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
         const velocity = selectedVisual?.kinematics ?? getKinematics(selected);
         cameraController.update({
           selectedPosition,
+          contactPosition,
           targetPosition,
           headingDeg: velocity.headingDeg,
           pitchDeg: velocity.pitchDeg,
@@ -2100,12 +2488,19 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
           bodyQuaternion: selectedVisual?.quaternion,
           selectedAltitudeM: selectedPositionData.altitudeM,
           firstPersonOffsetM: heldMeta?.presentation?.firstPersonCameraOffsetM ?? 0.65,
-          cameraConfig: heldMeta?.presentation?.cameraConfig,
+          cameraConfig: heldMeta?.presentation?.cameraConfig ?? {
+            sideDistanceM: Math.max(32, (heldMeta?.presentation?.physicalLengthMeters ?? 5) * 9),
+            followDistanceM: Math.max(42, (heldMeta?.presentation?.physicalLengthMeters ?? 5) * 12),
+          },
           timestampMs: now,
         });
+        if (fpvFeedModeRef.current && cameraModeRef.current === CAMERA_MODE.FPV && containerRef.current) {
+          containerRef.current.style.visibility = 'visible';
+        }
       } else if (heldPosition) {
         cameraController.update({
           selectedPosition: heldPosition,
+          contactPosition,
           ...heldMeta?.visualState?.kinematics,
           bodyQuaternion: heldMeta?.visualState?.quaternion,
           selectedAltitudeM: heldMeta?.visualState?.position?.altitudeM ?? 0,
@@ -2118,6 +2513,7 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
         }
         cameraController.update({ selectedPosition: null, timestampMs: now });
       }
+      environment.sync(entityMetadata, state.missiles, smokePuffs);
     };
 
     const pickHandler = new ScreenSpaceEventHandler(viewer.scene.canvas);
@@ -2133,18 +2529,37 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
       }
       const picked = viewer.scene.pick(pickPosition);
       const cesiumId = picked?.id?.id;
-      if (typeof cesiumId !== 'string') return;
+      if (typeof cesiumId !== 'string') {
+        selectedKeyRef.current = null;
+        setSelectedKey(null);
+        setSelectedTelemetry(null);
+        setGroundSelected(null);
+        return;
+      }
       if (cesiumId.startsWith(ADVANCED_TRACK_PREFIX)) {
+        setGroundSelected(null);
         const trackId = cesiumId.slice(ADVANCED_TRACK_PREFIX.length);
         const engineState = useEngine.getState();
         const track = engineState.tracks.find(candidate => candidate.id === trackId);
         if (!track || track.state === 'LOST') return;
         if (engineState.controlledControllableEntityId) {
           setControllableSelectedTrack(engineState.controlledControllableEntityId, trackId);
-        } else setSelectedTrack(trackId);
+        } else {
+          setSelectedTrack(trackId);
+          const target = engineState.airTargets.find(candidate => candidate.id === track.targetId);
+          if (target) selectEntity(makeSelectionKey(ADVANCED_ENTITY_KIND.TARGET, target.id), false);
+        }
         return;
       }
-      if (!cesiumId.startsWith(ADVANCED_PREFIX)) return;
+      if (!cesiumId.startsWith(ADVANCED_PREFIX)) {
+        if (picked?.id?.properties?.groundKey) return;
+        selectedKeyRef.current = null;
+        setSelectedKey(null);
+        setSelectedTelemetry(null);
+        setGroundSelected(null);
+        return;
+      }
+      setGroundSelected(null);
       selectEntity(cesiumId.slice(ADVANCED_PREFIX.length), false);
     }, ScreenSpaceEventType.LEFT_CLICK);
 
@@ -2186,6 +2601,27 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
     };
     const unsubscribeSnapshots = useEngine.subscribe((state, previous) => {
       if (state.simulationTime !== previous.simulationTime) captureVisualSnapshots(state);
+      // Register every new airframe on its first fixed step. A delayed general
+      // reconcile made the launcher flash appear before the NASAMS model.
+      if (state.missiles !== previous.missiles) state.missiles.forEach(missile => {
+        if (!previous.missiles.some(candidate => candidate.id === missile.id)) {
+          addEntity(ADVANCED_ENTITY_KIND.INTERCEPTOR, missile);
+        }
+        if (missile.interceptorSpecId !== 'INT-ASTER30-V1' || missile.motorPhase === 'BOOST'
+          || asterBoosterDebris.has(missile.id)) return;
+        const before = previous.missiles.find(candidate => candidate.id === missile.id);
+        if (!before || before.motorPhase !== 'BOOST') return;
+        const presentation = getAdvancedInterceptorPresentation(missile);
+        const key = makeSelectionKey(ADVANCED_ENTITY_KIND.INTERCEPTOR, missile.id);
+        const visual = sampleVisualState(visualStates, key, state.simulationTime);
+        if (!visual) return;
+        asterBoosterDebris.set(missile.id, createAsterBoosterDebris(viewer,
+          visual, presentation, state.simulationTime, missile.id));
+        const missileEntity = cesiumEntities.get(key);
+        if (missileEntity?.model) missileEntity.model.uri = presentation.separatedBodyModelUri;
+        const meta = entityMetadata.get(key);
+        if (meta) meta.presentation = presentation;
+      });
     });
     const removePreRender = viewer.scene.preRender.addEventListener(updateScene);
     // Screen projection must happen after camera update, every rendered frame.
@@ -2246,6 +2682,7 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
       removePostRender();
       unsubscribeSnapshots();
       pickHandler.destroy();
+      viewer.canvas.removeEventListener('wheel', onFreeCameraWheel, true);
       cesiumEntities.clear();
       entityMetadata.clear();
       interpolationCache.clear();
@@ -2253,6 +2690,8 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
       trackCueEntities.clear();
       trailHistory.clear();
       plumeEntities.clear();
+      smokeStrands.clear();
+      launchEffects.clear();
       thermalTrailEntities.clear();
       radarBeamEntities.clear();
       seekerDebugEntities.clear();
@@ -2261,8 +2700,11 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
       smokePuffs.splice(0, smokePuffs.length);
       lastSmokeSample.clear();
       interceptEffects.clear();
+      asterBoosterDebris.clear();
       trailEntityRef.current = [];
       altitudeReferenceRef.current = null;
+      coldLaunchVfx.destroy();
+      environment.destroy();
       olsController.destroy();
       olsControllerRef.current = null;
       cameraController.destroy();
@@ -2270,7 +2712,8 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
       viewerRef.current = null;
       if (!viewer.isDestroyed()) viewer.destroy();
     };
-  }, [selectEntity, setCameraMode, setControllableSelectedTrack, setSelectedTrack]);
+  }, [selectEntity, setCameraMode, setControllableSelectedTrack, setSelectedTrack,
+    returnToCommandSafely, showCameraToast]);
 
   useEffect(() => {
     const sampleTrails = () => {
@@ -2365,8 +2808,9 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
                 : sampleVisualState(visualStatesRef.current, key,
                   Math.min(visualTimeRef.current, meta?.visualImpact?.time ?? Infinity));
               if (!pose) return undefined;
-              const anchorPosition = presentation.thermalAnchorModelM
-                ? getVisualModelAnchorPosition(pose, presentation, presentation.thermalAnchorModelM)
+              const anchorPresentation = meta?.presentation ?? presentation;
+              const anchorPosition = anchorPresentation.thermalAnchorModelM
+                ? getVisualModelAnchorPosition(pose, anchorPresentation, anchorPresentation.thermalAnchorModelM)
                 : getVisualExhaustPosition(pose, pose.worldPosition, {
                 exhaustOffsetMeters: presentation.exhaustOffsetMeters
                   ?? presentation.physicalLengthMeters * presentation.baseVisualScale * 0.4,
@@ -2635,6 +3079,8 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
           manualControlEnabled: entity.manualControlEnabled ?? null,
           launchSourceId: entity.launchSourceId ?? null,
           selectedTrackId: entity.selectedTrackId ?? null,
+          controlMode: entity.controlMode ?? CONTROLLABLE_CONTROL_MODE.MANUAL,
+          navigation: entity.navigation ?? null,
           cameraMode: entity.cameraMode ?? null,
           rawInput: entity.controlState?.rawInput ?? null,
           smoothedInput: entity.controlState?.smoothedInput ?? null,
@@ -2764,38 +3210,67 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
   const compactControl = activeControl && !controlDetailsOpen;
   const fpvTelemetry = selectedTelemetry ?? lastFpvTelemetry;
 
-  return <main className={`advanced-scene${activeControl ? ' has-active-control' : ''}${cameraMode === CAMERA_MODE.FPV ? ' is-fpv-camera' : ''}${fpvFeedMode ? ' is-fpv-feed' : ''}${signalLost ? ' is-signal-lost' : ''}${visualMode === ADVANCED_VISUAL_MODE.THERMAL ? ' is-thermal' : ''}`}>
+  return <main className={`advanced-scene${activeControl ? ' has-active-control' : ''}${cameraMode === CAMERA_MODE.FPV ? ' is-fpv-camera' : ''}${fpvFeedMode ? ' is-fpv-feed' : ''}${signalLost ? ' is-signal-lost' : ''}${visualMode === ADVANCED_VISUAL_MODE.THERMAL ? ' is-thermal' : ''}${visualMode === ADVANCED_VISUAL_MODE.LOW_LIGHT ? ' is-low-light' : ''}`}>
     <div ref={containerRef} className="advanced-scene__globe" />
     {olsFeedMode && <OlsHud stationId={olsStationId} ru={ru} bracketRef={olsBracketRef}
-      onSelect={key => olsControllerRef.current?.select(key)} onExit={returnToCommandSafely} />}
+      torMode={Boolean(torOlsReturnScene)} torManual={torOlsManual}
+      onSelect={key => olsControllerRef.current?.select(key)}
+      onLock={() => olsControllerRef.current?.lockCrosshair()}
+      onRelease={() => olsControllerRef.current?.releaseLock()}
+      onExit={returnToCommandSafely}
+      returnLabel={ru ? 'НАЗАД' : 'BACK'} />}
     {!cameraFeedMode && <AdvancedToolbar cameraMode={cameraMode} setCameraMode={setCameraMode}
       resetCamera={resetCamera}
       returnToCommand={returnToCommandSafely}
       visualMode={visualMode}
       setVisualMode={setVisualMode}
+      openOls={() => {
+        const state = useEngine.getState();
+        const station = state.searchRadars[0] ?? state.batteries[0];
+        if (!station) return;
+        olsFromAdvancedRef.current = true;
+        useGameStore.getState().openOlsFeed(useGameStore.getState().commandScene, station.id);
+      }}
       spawnTestEntity={() => {
         const id = spawnControllableTestEntity();
         if (id) selectEntity(makeSelectionKey(ADVANCED_ENTITY_KIND.CONTROLLABLE, id), true);
       }}
       controllableSelected={selectedTelemetry?.kind === ADVANCED_ENTITY_KIND.CONTROLLABLE
         && controlledControllableEntityId === selectedTelemetry.id}
-      ru={ru} />}
+      ru={ru} engineeringEnabled={engineeringEnabled} sandboxMode={sandboxMode} />}
+    <GroundPlacement viewer={viewerReady} enabled={!cameraFeedMode} selected={groundSelected}
+      onSelect={key => { setGroundSelected(key); if (key) { setCameraMode(CAMERA_MODE.FREE); setSelectedKey(null); } }}
+      onOpenTorOls={stationId => {
+        const battery = useEngine.getState().batteries.find(item => item.id === stationId);
+        openCanonicalTorOls(battery);
+      }} ru={ru} />
+    {!cameraFeedMode && <AdvancedSessionPanel viewer={viewerReady} ru={ru} onFocus={key => selectEntity(key, true)}
+      onOls={stationId => {
+        const tor = useEngine.getState().batteries.find(item => item.id === stationId
+          && item.category === 'TOR_M1');
+        if (tor) { openCanonicalTorOls(tor); return; }
+        olsFromAdvancedRef.current = true;
+        useGameStore.getState().openOlsFeed(useGameStore.getState().commandScene, stationId);
+      }} />}
     {!cameraFeedMode && <AdvancedTimeControls timeScale={timeScale} setTimeScale={setTimeScale} ru={ru} />}
     {!cameraFeedMode && !compactControl && <EntityList snapshot={entitySnapshot} selectedKey={selectedKey}
-      onSelect={key => selectEntity(key, true)} ru={ru} />}
+      onSelect={key => { setGroundSelected(null); selectEntity(key, true); }} ru={ru}
+      groundSelected={groundSelected} onGroundSelect={key => { setGroundSelected(key); setCameraMode(CAMERA_MODE.FREE); setSelectedKey(null); }} />}
     {!cameraFeedMode && <aside className="advanced-right-dock">
-      <AdvancedOverlayMenu />
-      {!compactControl && <SelectedTelemetry entity={selectedTelemetry} trackOptions={entitySnapshot.tracks}
-        ru={ru} debugOverlayVisible={debugOverlayVisible || advancedOverlays.debug}
+      <EnvironmentControls sandboxMode={sandboxMode} ru={ru} />
+      <AdvancedOverlayMenu engineeringEnabled={engineeringEnabled} onEngineeringChange={setEngineeringEnabled} />
+      <MissileLog />
+      {!compactControl && selectedTelemetry && <SelectedTelemetry entity={selectedTelemetry} trackOptions={entitySnapshot.tracks}
+        ru={ru} debugOverlayVisible={engineeringEnabled && (debugOverlayVisible || advancedOverlays.debug)}
         controlledEntityId={controlledControllableEntityId}
         onTakeControl={id => {
-          if (!setControlledControllableEntity(id)) return;
+          setControllableControlMode(id, CONTROLLABLE_CONTROL_MODE.MANUAL);
           setControlDetailsEntityId(null);
           if (timeScale !== 1) setTimeScale(1);
-          setCameraMode(CAMERA_MODE.THIRD_PERSON);
-          showCameraToast('CAMERA: THIRD');
+          enterAdvancedFpv(id);
         }}
         onExitControl={() => {
+          if (advancedFpvReturnRef.current) { exitAdvancedFpv(); return; }
           releaseControllableControl();
           setCameraMode(CAMERA_MODE.FREE);
           showCameraToast(ru ? 'УПРАВЛЕНИЕ ОТКЛЮЧЕНО' : 'CONTROL RELEASED');
@@ -2807,8 +3282,38 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
           setSelectedTelemetry(null);
           setCameraMode(CAMERA_MODE.FREE);
         }}
-        onSelectTrack={setControllableSelectedTrack} />}
-      {advancedOverlays.performance && <output className="advanced-performance">
+        onSelectTrack={setControllableSelectedTrack}
+        onSetControlMode={(id, mode) => {
+          const entity = useEngine.getState().controllableAirEntities.find(candidate => candidate.id === id);
+          if (mode === CONTROLLABLE_CONTROL_MODE.MANUAL) {
+            setControllableControlMode(id, mode);
+            setControlledControllableEntity(id);
+          } else if (mode === CONTROLLABLE_CONTROL_MODE.HOLD) {
+            setControllableControlMode(id, mode);
+          } else if (entity?.selectedTrackId) {
+            releaseControllableControl();
+            setControllableNavigationTrack(id, entity.selectedTrackId);
+          }
+        }}
+        onFollow={id => {
+          setSelectedControllableEntity(id);
+          setCameraMode(CAMERA_MODE.THIRD_PERSON);
+        }}
+        onOpenFpv={enterAdvancedFpv}
+        onOpenOls={targetId => {
+          const state = useEngine.getState();
+          const station = state.batteries.find(item => item.id === state.selectedBatteryId
+            && item.category === 'TOR_M1')
+            ?? state.batteries.find(item => item.category === 'TOR_M1')
+            ?? state.searchRadars[0] ?? state.batteries.find(item => item.components?.radar);
+          if (!station) { showCameraToast(ru ? 'OLS НЕДОСТУПНА' : 'OLS UNAVAILABLE'); return; }
+          olsFromAdvancedRef.current = true;
+          const targetKey = makeSelectionKey(ADVANCED_ENTITY_KIND.TARGET, targetId);
+          if (station.category === 'TOR_M1') openCanonicalTorOls(station, targetKey);
+          else useGameStore.getState().openOlsFeed(useGameStore.getState().commandScene,
+            station.id, targetKey);
+        }} />}
+      {engineeringEnabled && advancedOverlays.performance && <output className="advanced-performance">
         FPS {performanceSnapshot.fps} · AVG {(performanceSnapshot.averageMs ?? 0).toFixed(1)} · P95 {(performanceSnapshot.p95Ms ?? 0).toFixed(1)} · FRAME MAX {performanceSnapshot.renderMs.toFixed(1)} MS · SIM {performanceSnapshot.simulationMs.toFixed(2)} MS
         {' · '}HIT VFX {(performanceSnapshot.hit?.vfxMs ?? 0).toFixed(2)} · CLEANUP {(performanceSnapshot.hit?.reconcileMs ?? 0).toFixed(2)} · HIT FRAME {(performanceSnapshot.hit?.frameMaxMs ?? 0).toFixed(1)} MS
       </output>}
@@ -2827,18 +3332,33 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
         {ru ? (controlDetailsOpen ? 'СВЕРНУТЬ ПАНЕЛИ' : 'ПАНЕЛИ') : (controlDetailsOpen ? 'HIDE PANELS' : 'PANELS')}
       </button>
       <button type="button" onClick={() => {
+        if (advancedFpvReturnRef.current) { exitAdvancedFpv(); return; }
         releaseControllableControl();
         setCameraMode(CAMERA_MODE.FREE);
       }}>{ru ? 'ВЫЙТИ · ESC' : 'EXIT · ESC'}</button>
     </aside>}
     {!cameraFeedMode && cameraToast && <div className="advanced-camera-toast">{cameraToast}</div>}
-    {fpvFeedMode && <nav className="fpv-feed-actions">
-      <button onClick={() => setVisualMode(mode => mode === ADVANCED_VISUAL_MODE.VISUAL
-        ? ADVANCED_VISUAL_MODE.THERMAL : ADVANCED_VISUAL_MODE.VISUAL)}>
-        {visualMode === ADVANCED_VISUAL_MODE.THERMAL ? 'VISUAL' : 'THERMAL'} · V</button>
-      <button onClick={returnToCommandSafely}>ESC · COMMAND</button>
+    {cameraMode === CAMERA_MODE.FPV && !olsFeedMode && <nav className="fpv-feed-actions">
+      {fpvTelemetry && <>
+        <button className={fpvTelemetry.controlMode === CONTROLLABLE_CONTROL_MODE.MANUAL ? 'is-active' : ''}
+          onClick={() => {
+            setControllableControlMode(fpvTelemetry.id, CONTROLLABLE_CONTROL_MODE.MANUAL);
+            setControlledControllableEntity(fpvTelemetry.id);
+          }}>{ru ? 'РУЧНОЙ' : 'MANUAL'}</button>
+        <button className={fpvTelemetry.controlMode === CONTROLLABLE_CONTROL_MODE.HOLD ? 'is-active' : ''}
+          onClick={() => setControllableControlMode(fpvTelemetry.id, CONTROLLABLE_CONTROL_MODE.HOLD)}>{ru ? 'ВИСЕНИЕ' : 'HOVER'}</button>
+        <button disabled={!fpvTelemetry.selectedTrackId}
+          className={fpvTelemetry.controlMode === CONTROLLABLE_CONTROL_MODE.AUTO_NAV ? 'is-active' : ''}
+          onClick={() => setControllableNavigationTrack(fpvTelemetry.id,
+            fpvTelemetry.selectedTrackId)}>{ru ? 'АВТО НАВ.' : 'AUTO NAV'}</button>
+      </>}
+      {Object.values(ADVANCED_VISUAL_MODE).map(mode => (
+        <button key={mode} className={visualMode === mode ? 'is-active' : ''}
+          aria-pressed={visualMode === mode} onClick={() => setVisualMode(mode)}>{mode}</button>
+      ))}
+      <button onClick={fpvFeedMode ? returnToCommandSafely : exitAdvancedFpv}>ESC · {fpvFeedMode ? 'COMMAND' : (ru ? 'НАЗАД' : 'BACK')}</button>
     </nav>}
-    {(activeControl || signalLost) && cameraMode === CAMERA_MODE.FPV && fpvTelemetry && (
+    {cameraMode === CAMERA_MODE.FPV && fpvTelemetry && (
       <FpvOsd telemetry={fpvTelemetry} visualMode={visualMode} signalLost={signalLost}
         trackOptions={entitySnapshot.tracks}
         onSelectTrack={trackId => setControllableSelectedTrack(fpvTelemetry.id, trackId)}
@@ -2849,8 +3369,9 @@ export default function AdvancedScene({ active = true, onVisualFrame }) {
       + entitySnapshot.controllables.length === 0 && (
       <div className="advanced-empty-state">
         <strong>{ru ? 'НЕТ АКТИВНЫХ ВОЗДУШНЫХ ОБЪЕКТОВ' : 'NO ACTIVE AIRBORNE ENTITIES'}</strong>
-        <span>{ru ? 'Вернитесь в COMMAND, запустите цель и перехватчик, затем снова откройте 3D.' : 'Return to COMMAND, launch a target and interceptor, then reopen 3D.'}</span>
-        <button onClick={returnToCommandSafely}>COMMAND</button>
+        <span>{sandboxMode
+          ? (ru ? 'Добавьте ПВО и радар, затем цель. Выберите цель для пуска или OLS.' : 'Add a SAM and radar, then a target. Select the target to launch or open OLS.')
+          : (ru ? 'Добавьте цель или FPV через панель «Добавить цель».' : 'Add a target or FPV using Add target.')}</span>
       </div>
     )}
   </main>;

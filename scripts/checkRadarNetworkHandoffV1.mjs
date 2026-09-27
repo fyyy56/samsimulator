@@ -3,6 +3,8 @@ import { setupVisualScenario } from './visual-test-scenarios.js';
 import { getDestinationPoint, getDistanceKm } from '../src/store/geo.js';
 import { useEngine } from '../src/store/engine.js';
 import {
+  RADAR_SOURCE_DWELL_TAKEOVER_RATIO,
+  RADAR_SOURCE_MINIMUM_DWELL_SEC,
   RADAR_SOURCE_TAKEOVER_RATIO,
   fuseSensorEvidence,
   scoreRadarSourceContact,
@@ -65,6 +67,10 @@ const retained = fuseSensorEvidence({ contacts: [currentContact, nearContact], t
   simulationTime: 10, existingTrack: initialTrack });
 assert.equal(retained.sourceRadarId, 'P18',
   'E: a marginally better source must not cause scan-to-scan flapping');
+assert.equal(retained.sourceTakeoverRatio, RADAR_SOURCE_DWELL_TAKEOVER_RATIO,
+  'E: a newly selected source must use the stronger minimum-dwell threshold');
+assert.ok(retained.sourceDwellRemainingSec <= RADAR_SOURCE_MINIMUM_DWELL_SEC,
+  'E: source dwell state must be explicit on the network observation');
 
 const offset = getDestinationPoint(target.position.lat, target.position.lng, 0, 0.8);
 const betterMeasurement = makeMeasurement('BETTER-SAM', offset, 0.98, 22, 28, 1.2);
@@ -79,6 +85,8 @@ assert.equal(handedOffTrack.id, initialTrack.id,
   'E: source handoff must preserve logical Track ID');
 assert.equal(handedOffTrack.sourceHandoff.fromSensorId, 'P18');
 assert.equal(handedOffTrack.sourceHandoff.toSensorId, 'BETTER-SAM');
+assert.equal(handedOffTrack.sourceSelectedAt, 10.1,
+  'E: source handoff must start a new minimum-dwell window');
 assert.ok(Math.abs(handedOffTrack.reportedSpeedKmh - initialTrack.reportedSpeedKmh) < 5,
   'E: cross-sensor position offset must not become target velocity');
 assert.ok(getDistanceKm(initialTrack.reportedPosition.lat, initialTrack.reportedPosition.lng,
@@ -123,6 +131,8 @@ console.log(JSON.stringify({
   },
   hysteresis: {
     takeoverRatio: RADAR_SOURCE_TAKEOVER_RATIO,
+    dwellTakeoverRatio: RADAR_SOURCE_DWELL_TAKEOVER_RATIO,
+    minimumDwellSec: RADAR_SOURCE_MINIMUM_DWELL_SEC,
     currentScore: +currentRawScore.toFixed(4),
     nearPeerScore: +nearRawScore.toFixed(4),
     retainedSource: retained.sourceRadarId,

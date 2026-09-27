@@ -107,6 +107,9 @@ function checkLaunch(category, bearing, distanceKm) {
   } else {
     assert.ok(headingDelta(firstMissile.heading, pending.heading) < 0.01);
     assert.ok(getDistanceKm(firstMissile.lat, firstMissile.lng, pending.lat, pending.lng) > 0);
+    assert.equal(firstMissile.flightPathAngleDeg, profile.launchTubeElevationDeg);
+    assert.ok(firstMissile.altitudeM > pending.altitudeM,
+      `${category}: inclined launcher must give the missile a climbing exit`);
   }
 }
 

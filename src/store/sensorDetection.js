@@ -23,6 +23,8 @@ export const SENSOR_EVIDENCE_STAGE = Object.freeze({
 const clamp = (value, minimum, maximum) => Math.max(minimum, Math.min(maximum, value));
 const clamp01 = value => clamp(value, 0, 1);
 export const RADAR_SOURCE_TAKEOVER_RATIO = 1.16;
+export const RADAR_SOURCE_MINIMUM_DWELL_SEC = 3;
+export const RADAR_SOURCE_DWELL_TAKEOVER_RATIO = 1.5;
 
 export const makeSensorContactKey = (sourceBatteryId, targetId) => (
   `${sourceBatteryId}:${targetId}`
@@ -589,10 +591,17 @@ export function fuseSensorEvidence({ contacts, target, simulationTime, existingT
     candidate.contact.sourceRadarId === existingTrack?.sourceRadarId
   )) ?? null;
   // Hysteresis prevents near-equal radars alternating ownership on adjacent scans.
+  // During the short dwell window a new owner needs a decisive quality advantage.
   // An offline/stale owner is absent from eligible and therefore cannot block takeover.
+  const sourceDwellAgeSec = existingTrack?.sourceSelectedAt == null
+    ? Infinity
+    : Math.max(0, simulationTime - existingTrack.sourceSelectedAt);
+  const sourceTakeoverRatio = sourceDwellAgeSec < RADAR_SOURCE_MINIMUM_DWELL_SEC
+    ? RADAR_SOURCE_DWELL_TAKEOVER_RATIO
+    : RADAR_SOURCE_TAKEOVER_RATIO;
   const sourceCandidate = currentCandidate && bestCandidate
     && bestCandidate.contact !== currentCandidate.contact
-    && bestCandidate.score < currentCandidate.score * RADAR_SOURCE_TAKEOVER_RATIO
+    && bestCandidate.score < currentCandidate.score * sourceTakeoverRatio
     ? currentCandidate
     : bestCandidate;
   const sourceContact = sourceCandidate?.contact ?? null;
@@ -637,7 +646,8 @@ export function fuseSensorEvidence({ contacts, target, simulationTime, existingT
     bestSensorId: sourceContact.sourceRadarId,
     bestSensorScore: sourceCandidate.score,
     previousSourceScore: currentCandidate?.score ?? null,
-    sourceTakeoverRatio: RADAR_SOURCE_TAKEOVER_RATIO,
+    sourceTakeoverRatio,
+    sourceDwellRemainingSec: Math.max(0, RADAR_SOURCE_MINIMUM_DWELL_SEC - sourceDwellAgeSec),
     lastMeasurementSensorId: sourceContact.sourceRadarId,
     reacquisition: currentContacts.some(contact => contact.lastHistoryFactor > 1.1),
     measurement: sourceContact.lastMeasurement,

@@ -171,11 +171,12 @@ export function advanceInterceptorFlight(
 ) {
   const nextFlightTime = interceptor.flightTime + deltaTimeSec;
   const currentSpeedMps = Math.max(0, interceptor.speedKmh / 3.6);
-  const motorAccelerationMps2 = getAverageMotorAcceleration(
-    physics,
-    interceptor.flightTime,
-    nextFlightTime,
-  );
+  const coldLaunch = Boolean(interceptor.launchProfile?.coldLaunch);
+  const ignitionTime = interceptor.motorIgnitedAtFlightTime;
+  const motorAccelerationMps2 = coldLaunch && ignitionTime == null ? 0
+    : getAverageMotorAcceleration(physics,
+      interceptor.flightTime - (coldLaunch ? ignitionTime : 0),
+      nextFlightTime - (coldLaunch ? ignitionTime : 0));
   const initialLaunchAccelerationMps2 = interceptor.flightTime
     < (interceptor.initialAccelerationDurationSec ?? 0)
     ? (interceptor.initialLaunchAccelerationMps2 ?? 0)
@@ -211,8 +212,10 @@ export function advanceInterceptorFlight(
   const averageSpeedKmh = (interceptor.speedKmh + nextSpeedKmh) / 2;
   const travelDistanceKm = averageSpeedKmh * deltaTimeSec / 3600;
   const distanceTraveledKm = interceptor.distanceTraveledKm + travelDistanceKm;
-  const motor = getMotorState(physics, nextFlightTime);
-  const phase = motor.motorTimeLeftSec > 0
+  const motor = coldLaunch && ignitionTime == null
+    ? { phase: 'COLD', phaseTimeLeftSec: 0, motorTimeLeftSec: getMotorBurnTimeSec(physics) }
+    : getMotorState(physics, nextFlightTime - (coldLaunch ? ignitionTime : 0));
+  const phase = motor.phase !== 'COLD' && motor.motorTimeLeftSec > 0
     ? INTERCEPTOR_PHASE.POWERED
     : INTERCEPTOR_PHASE.COAST;
   const energyState = getInterceptorEnergyState(nextSpeedMps, physics);

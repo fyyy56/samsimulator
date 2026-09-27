@@ -142,6 +142,9 @@ export function applySensorEvidenceObservation({ existingTrack, target, observat
     reportedAltitudeM: estimate.reportedAltitudeM,
     sourceBatteryId: observation.sourceBatteryId,
     sourceRadarId: observation.sourceRadarId ?? null,
+    sourceSelectedAt: sourceChanged || existingTrack?.sourceSelectedAt == null
+      ? simulationTime
+      : existingTrack.sourceSelectedAt,
     expectedRevisitSec: observation.expectedRevisitSec ?? null,
     contributingSensors: observation.contributingSensors
       ?? existingTrack?.contributingSensors
@@ -150,6 +153,7 @@ export function applySensorEvidenceObservation({ existingTrack, target, observat
     bestSensorScore: observation.bestSensorScore ?? existingTrack?.bestSensorScore ?? null,
     previousSourceScore: observation.previousSourceScore ?? null,
     sourceTakeoverRatio: observation.sourceTakeoverRatio ?? null,
+    sourceDwellRemainingSec: observation.sourceDwellRemainingSec ?? 0,
     lastMeasurementSensorId: observation.lastMeasurementSensorId
       ?? observation.sourceRadarId
       ?? null,

@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import GameViewport from '../src/scenes/GameViewport.jsx';
-import { useGameStore } from '../src/store/gameStore.js';
+import { GAME_SCENE, useGameStore } from '../src/store/gameStore.js';
 import { useEngine } from '../src/store/engine.js';
 import { createSimulationEvent } from '../src/store/simulationEvents.js';
 import { setupVisualScenario } from './visual-test-scenarios.js';
@@ -15,7 +15,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import '../src/index.css';
 
 useEngine.getState().resetScenario('SANDBOX');
-useGameStore.setState({ scene: 'ADVANCED_PLACEHOLDER', presentationMode: 'ADVANCED', commandScene: 'SANDBOX', resumeCommandSimulation: true,
+useGameStore.setState({ scene: GAME_SCENE.SANDBOX_3D, presentationMode: 'ADVANCED', commandScene: GAME_SCENE.SANDBOX_2D, resumeCommandSimulation: true,
   commandViewState: { latitude: 50, longitude: 30, zoom: 8, pitch: 0, bearing: 0 } });
 export default function Fixture() {
   const [model, setModel] = useState('GERAN_2');
@@ -25,14 +25,18 @@ export default function Fixture() {
   const recording = useRef(null);
   const observeFrame = useCallback((canvas, time, diagnostics) => {
     const capture = recording.current;
-    if (!capture || time - capture.last < 0.035) return;
-    capture.last = time;
+    if (!capture) return;
+    const clock = capture.lifecycle ? performance.now() / 1000 : time;
+    if (clock - capture.last < (capture.lifecycle ? 0.22 : 0.035)) return;
+    capture.last = clock;
+    if (capture.lifecycle && diagnostics.impacts.some(item => item.held)) capture.contactWall ??= performance.now();
     const state = useEngine.getState();
     const impact = state.missiles.find(m => m.visualImpact)?.visualImpact;
     if (impact) capture.impactTime ??= impact.time;
     capture.frames.push({ time, diagnostics, image: canvas.toDataURL('image/jpeg', .75) });
-    if (capture.frames.length > 16) capture.frames.shift();
-    if ((capture.impactTime && time > capture.impactTime + .16) || time > capture.start + 3) {
+    if (capture.frames.length > (capture.lifecycle ? 32 : 16)) capture.frames.shift();
+    if (capture.lifecycle ? (capture.contactWall && performance.now() > capture.contactWall + 4500) || performance.now() > capture.wallStart + 20000
+      : (capture.impactTime && time > capture.impactTime + .16) || time > capture.start + 3) {
       recording.current = null;
       state.setTimeScale(0);
       setFrames(capture.frames);
@@ -106,10 +110,15 @@ export default function Fixture() {
       <button onClick={() => useEngine.getState().setTimeScale(0.25)}>0.25x</button>
       <button onClick={() => prepareFinal('ENGAGEMENT_NASAMS')}>NASAMS FINAL</button>
       <button onClick={() => prepareFinal('ENGAGEMENT')}>PAC FINAL</button>
+      <button onClick={() => prepareFinal('ENGAGEMENT_ASTER')}>ASTER FINAL</button>
       <button onClick={() => { const time = useEngine.getState().simulationTime;
         recording.current = { start: time, last: -Infinity, frames: [] };
         useEngine.getState().setTimeScale(0.25);
       }}>CAPTURE FINAL</button>
+      <button onClick={() => { const time = useEngine.getState().simulationTime;
+        recording.current = { start: time, last: -Infinity, frames: [], lifecycle: true, wallStart: performance.now() };
+        useEngine.getState().setTimeScale(0.25);
+      }}>CAPTURE VFX LIFECYCLE</button>
       <button onClick={() => command ? useGameStore.getState().openAdvancedPreview('SANDBOX') : useGameStore.getState().returnToCommand()}>{command ? 'VIEW ADVANCED' : 'VIEW COMMAND'}</button>
       <button onClick={() => { const state = useEngine.getState();
         const station = state.searchRadars[0] ?? state.batteries[0];
@@ -129,7 +138,7 @@ export default function Fixture() {
       }}>NETWORK FPV</button>
       {['RADAR_P18', 'RADAR_35D6', 'RADAR_79K6'].map(mode =>
         <button key={mode} onClick={() => scenario(mode)}>{mode}</button>)}
-      {['RADAR', 'OLS', 'FPV_CONTACT', 'BALLISTIC', 'APEX', 'DESCENT', 'INTERCEPTOR', 'ENGAGEMENT', 'ENGAGEMENT_NASAMS', 'MIXED'].map(mode =>
+      {['RADAR', 'OLS', 'FPV_CONTACT', 'BALLISTIC', 'APEX', 'DESCENT', 'INTERCEPTOR', 'ENGAGEMENT', 'ENGAGEMENT_NASAMS', 'ENGAGEMENT_ASTER', 'MIXED'].map(mode =>
         <button key={mode} onClick={() => scenario(mode)}>{mode}</button>)}
       <button onClick={() => {
         const store = useEngine.getState(); store.startDeploy('LONG');

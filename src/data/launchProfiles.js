@@ -9,6 +9,46 @@ const profile = value => Object.freeze({
 });
 
 export const DEFAULT_LAUNCH_PROFILES = Object.freeze({
+  'INT-9M331-V1': profile({
+    id: 'TOR_M1_9M331_COLD_V1',
+    platformId: 'TOR_M1',
+    launcherId: 'TOR_M1_UNIT',
+    systemName: 'Tor-M1',
+    launcherName: 'Tor-M1',
+    missileName: '9М331',
+    interceptorSpecId: 'INT-9M331-V1',
+    launcherAssetId: 'TOR_M1',
+    missileAssetId: '9M331',
+    launchMode: LAUNCH_MODE.VERTICAL,
+    launchPoints: [{ id: 'launch-point', x: 0.5, y: 0.5, launchDirectionOffsetDeg: 0 }],
+    launchPointAltitudeM: 3.5,
+    coldLaunch: {
+      reference: 'GAMEPLAY_ESTIMATE',
+      ejectClearanceM: 4,
+      minimumEjectSec: 0.14,
+      minimumIgnitionSec: 0.75,
+      orientToleranceDeg: 10,
+    },
+    launcherSpriteRotationOffsetDeg: 0,
+    preLaunchDelaySec: 0.35,
+    initialLaunchSpeedMps: 21,
+    initialLaunchAccelerationMps2: 18,
+    initialAccelerationDurationSec: 0.45,
+    guidanceEnableDelaySec: 2.1,
+    visualDepartureDurationSec: 0.55,
+    spriteRotationOffsetDeg: -90,
+    mirrorX: false,
+    mirrorY: false,
+    visualScale: 1,
+    orientLauncherToTarget: false,
+    verticalDepartureDurationSec: 0.2,
+    verticalDepartureVisualDistance: 6,
+    initialTurnDelaySec: 0,
+    turnToTargetDurationSec: 1.2,
+    launchGuidanceBlendSec: 0.5,
+    pitchOverMaxTurnRateDegPerSec: 58,
+    pitchOverAngularAccelerationDegPerSec2: 110,
+  }),
   'INT-LONG-V1': profile({
     id: 'PATRIOT_M903_PAC3',
     platformId: 'PATRIOT',
@@ -20,6 +60,7 @@ export const DEFAULT_LAUNCH_PROFILES = Object.freeze({
     launcherAssetId: 'PATRIOT_LAUNCHER',
     missileAssetId: 'PAC_3',
     launchMode: LAUNCH_MODE.INCLINED,
+    launchTubeElevationDeg: 38,
     launchPoints: [
       { id: 'launch-point', x: 0.46, y: 0.16, launchDirectionOffsetDeg: -45 },
     ],
@@ -39,6 +80,9 @@ export const DEFAULT_LAUNCH_PROFILES = Object.freeze({
     verticalDepartureVisualDistance: 0,
     initialTurnDelaySec: 0.48,
     turnToTargetDurationSec: 0.8,
+    launchGuidanceBlendSec: 0.55,
+    pitchOverMaxTurnRateDegPerSec: 30,
+    pitchOverAngularAccelerationDegPerSec2: 55,
   }),
   'INT-MEDIUM-V1': profile({
     id: 'NASAMS_AIM120_GROUND',
@@ -51,6 +95,7 @@ export const DEFAULT_LAUNCH_PROFILES = Object.freeze({
     launcherAssetId: 'NASAMS_LAUNCHER',
     missileAssetId: 'AIM_120',
     launchMode: LAUNCH_MODE.INCLINED,
+    launchTubeElevationDeg: 35,
     launchPoints: [
       { id: 'launch-point', x: 0.34, y: 0.15, launchDirectionOffsetDeg: -45 },
     ],
@@ -70,6 +115,9 @@ export const DEFAULT_LAUNCH_PROFILES = Object.freeze({
     verticalDepartureVisualDistance: 0,
     initialTurnDelaySec: 0.52,
     turnToTargetDurationSec: 0.9,
+    launchGuidanceBlendSec: 0.6,
+    pitchOverMaxTurnRateDegPerSec: 28,
+    pitchOverAngularAccelerationDegPerSec2: 50,
   }),
   'INT-SHORT-V1': profile({
     id: 'IRIS_T_SLM_VERTICAL',
@@ -101,6 +149,9 @@ export const DEFAULT_LAUNCH_PROFILES = Object.freeze({
     verticalDepartureVisualDistance: 34,
     initialTurnDelaySec: 0.7,
     turnToTargetDurationSec: 1.15,
+    launchGuidanceBlendSec: 0.28,
+    pitchOverMaxTurnRateDegPerSec: 70,
+    pitchOverAngularAccelerationDegPerSec2: 150,
   }),
   'INT-ASTER30-V1': profile({
     id: 'SAMP_T_ASTER30_VERTICAL',
@@ -132,6 +183,9 @@ export const DEFAULT_LAUNCH_PROFILES = Object.freeze({
     verticalDepartureVisualDistance: 40,
     initialTurnDelaySec: 0.75,
     turnToTargetDurationSec: 1.1,
+    launchGuidanceBlendSec: 0.38,
+    pitchOverMaxTurnRateDegPerSec: 60,
+    pitchOverAngularAccelerationDegPerSec2: 120,
   }),
 });
 
@@ -157,6 +211,8 @@ export const normalizeLaunchProfile = (value, fallback = DEFAULT_LAUNCH_PROFILES
     launcherAssetId: fallback.launcherAssetId,
     missileAssetId: fallback.missileAssetId,
     launchMode: source.launchMode === LAUNCH_MODE.VERTICAL ? LAUNCH_MODE.VERTICAL : LAUNCH_MODE.INCLINED,
+    launchTubeElevationDeg: clamp(source.launchTubeElevationDeg, 0, 80,
+      fallback.launchTubeElevationDeg ?? 0),
     launchPoints: [(source.launchPoints?.length ? source.launchPoints : fallback.launchPoints)[0]].map(point => ({
       id: 'launch-point',
       x: clamp(point.x, 0, 1, 0.5),
@@ -178,6 +234,14 @@ export const normalizeLaunchProfile = (value, fallback = DEFAULT_LAUNCH_PROFILES
     verticalDepartureVisualDistance: clamp(source.verticalDepartureVisualDistance, 0, 120, fallback.verticalDepartureVisualDistance),
     initialTurnDelaySec: clamp(source.initialTurnDelaySec, 0, 4, fallback.initialTurnDelaySec),
     turnToTargetDurationSec: clamp(source.turnToTargetDurationSec, 0.1, 5, fallback.turnToTargetDurationSec),
+    launchGuidanceBlendSec: clamp(source.launchGuidanceBlendSec, 0.1, 3,
+      fallback.launchGuidanceBlendSec ?? 0.6),
+    pitchOverMaxTurnRateDegPerSec: clamp(source.pitchOverMaxTurnRateDegPerSec, 5, 90,
+      fallback.pitchOverMaxTurnRateDegPerSec ?? 35),
+    pitchOverAngularAccelerationDegPerSec2: clamp(
+      source.pitchOverAngularAccelerationDegPerSec2, 10, 180,
+      fallback.pitchOverAngularAccelerationDegPerSec2 ?? 60,
+    ),
   };
   delete normalized.launcherFootprintM;
   return normalized;

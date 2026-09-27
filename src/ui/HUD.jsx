@@ -5,6 +5,7 @@ import { DEPLOYABLE_SYSTEM_IDS, SEARCH_RADAR_PROFILE_IDS, useEngine, SYSTEM_CATA
 import { getSearchRadarProfile } from '../data/searchRadarProfiles.js';
 import {
   ENGAGEMENT_STATUS,
+  canManualLaunch,
   getBatteryEngagementStatus,
   selectBestLauncher,
 } from '../store/engagement.js';
@@ -27,6 +28,7 @@ import {
   localizeLauncherState,
   localizeObjective,
   localizeTrackState,
+  localizeTechnicalTerm,
 } from '../data/uiLocalization.js';
 
 const formatTime = (totalSeconds) => {
@@ -293,9 +295,9 @@ export default function HUD({ simpleMode = false }) {
   const recentEvents = events.slice(-4).reverse();
 
   const launchRecommended = () => {
-    if (!recommendedBattery || recommendedBattery.status !== ENGAGEMENT_STATUS.READY) return;
+    if (!canManualLaunch(recommendedBattery?.battery, activeTrack)) return;
     setSelectedBattery(recommendedBattery.battery.id);
-    fireMissile();
+    useEngine.getState().queueEngagement(recommendedBattery.battery.id, activeTrack.id, BATTERY_CONTROL_MODE.MANUAL);
   };
 
   return (
@@ -455,26 +457,26 @@ export default function HUD({ simpleMode = false }) {
             </div>
             {commandMode && debugOverlayVisible && engagementCoordination && (
               <div className="engagement-coordinator-debug">
-                <div className="hud-section__heading">FIRE CONTROL STATE</div>
-                <DataRow label="TARGET" value={activeTarget ? getTargetDisplayName(activeTarget) : activeTrack.id} />
-                <DataRow label="THREAT" value={engagementCoordination.threatScore == null ? '—' : `${Math.round(engagementCoordination.threatScore)} / ${engagementCoordination.threatLevel ?? '—'}`} />
-                <DataRow label="STATE" value={engagementCoordination.state} />
-                <DataRow label="SYSTEM" value={engagementCoordination.assignedSystem ?? '—'} />
-                <DataRow label="LAUNCHER" value={engagementCoordination.assignedLauncherId ?? '—'} />
-                <DataRow label="WEAPON" value={engagementCoordination.assignedWeapon ?? '—'} />
-                <DataRow label="QUALITY" value={engagementCoordination.quality == null ? '—' : `${Math.round(engagementCoordination.quality * 100)}%`} />
-                <DataRow label="EXPECTED" value={engagementCoordination.expectedQuality == null ? '—' : `${Math.round(engagementCoordination.expectedQuality * 100)}%`} />
-                <DataRow label="WINDOW" value={engagementCoordination.window} />
-                <DataRow label="RESERVATION" value={engagementCoordination.reservation ?? '—'} />
-                <DataRow label="INTERCEPTOR" value={engagementCoordination.currentInterceptorId ?? '—'} />
-                <DataRow label="ASSESSMENT" value={engagementCoordination.assessment ?? '—'} />
-                <DataRow label="FALLBACK" value={engagementCoordination.bestFallbackBatteryId
+                <div className="hud-section__heading">{localizeTechnicalTerm('FIRE CONTROL STATE', language)}</div>
+                <DataRow label={localizeTechnicalTerm('TARGET', language)} value={activeTarget ? getTargetDisplayName(activeTarget) : activeTrack.id} />
+                <DataRow label={localizeTechnicalTerm('THREAT', language)} value={engagementCoordination.threatScore == null ? '—' : `${Math.round(engagementCoordination.threatScore)} / ${engagementCoordination.threatLevel ?? '—'}`} />
+                <DataRow label={localizeTechnicalTerm('STATE', language)} value={localizeTechnicalTerm(engagementCoordination.state, language)} />
+                <DataRow label={localizeTechnicalTerm('SYSTEM', language)} value={engagementCoordination.assignedSystem ?? '—'} />
+                <DataRow label={localizeTechnicalTerm('LAUNCHER', language)} value={engagementCoordination.assignedLauncherId ?? '—'} />
+                <DataRow label={localizeTechnicalTerm('WEAPON', language)} value={engagementCoordination.assignedWeapon ?? '—'} />
+                <DataRow label={localizeTechnicalTerm('QUALITY', language)} value={engagementCoordination.quality == null ? '—' : `${Math.round(engagementCoordination.quality * 100)}%`} />
+                <DataRow label={localizeTechnicalTerm('EXPECTED', language)} value={engagementCoordination.expectedQuality == null ? '—' : `${Math.round(engagementCoordination.expectedQuality * 100)}%`} />
+                <DataRow label={localizeTechnicalTerm('WINDOW', language)} value={localizeTechnicalTerm(engagementCoordination.window, language)} />
+                <DataRow label={localizeTechnicalTerm('RESERVATION', language)} value={localizeTechnicalTerm(engagementCoordination.reservation ?? '—', language)} />
+                <DataRow label={localizeTechnicalTerm('INTERCEPTOR', language)} value={engagementCoordination.currentInterceptorId ?? '—'} />
+                <DataRow label={localizeTechnicalTerm('ASSESSMENT', language)} value={localizeTechnicalTerm(engagementCoordination.assessment ?? '—', language)} />
+                <DataRow label={localizeTechnicalTerm('FALLBACK', language)} value={engagementCoordination.bestFallbackBatteryId
                   ? `${engagementCoordination.bestFallbackBatteryId} · ${engagementCoordination.bestFallbackQuality == null ? '—' : `${Math.round(engagementCoordination.bestFallbackQuality * 100)}%`}`
                   : '—'} />
-                <DataRow label="REASON" value={engagementCoordination.reason} />
+                <DataRow label={localizeTechnicalTerm('REASON', language)} value={localizeTechnicalTerm(engagementCoordination.reason, language)} />
                 {engagementCoordination.candidates?.length > 0 && (
                   <details className="engagement-coordinator-debug__candidates">
-                    <summary>CANDIDATES · {engagementCoordination.candidates.length}</summary>
+                    <summary>{localizeTechnicalTerm('CANDIDATES', language)} · {engagementCoordination.candidates.length}</summary>
                     {engagementCoordination.candidates.map(candidate => (
                       <div className={`fire-control-candidate is-${String(candidate.decision).toLowerCase()}`} key={`${candidate.batteryId}:${candidate.launcherId ?? 'none'}`}>
                         <span>{candidate.batteryId}</span>
@@ -508,11 +510,11 @@ export default function HUD({ simpleMode = false }) {
               )}
             </div>
             <button
-              disabled={recommendedBattery?.status !== ENGAGEMENT_STATUS.READY}
+              disabled={!canManualLaunch(recommendedBattery?.battery, activeTrack)}
               onClick={launchRecommended}
               className="engage-button"
             >
-              {recommendedBattery?.status === ENGAGEMENT_STATUS.READY
+              {recommendedBattery && canManualLaunch(recommendedBattery.battery, activeTrack)
                 ? `${recommendedBattery.battery.weaponType === 'GUN_AA' ? (ru ? 'Огонь' : 'Fire') : (ru ? 'Пуск' : 'Engage')} · ${recommendedBattery.battery.id}`
                 : (ru ? 'Ожидание готовности' : 'Awaiting readiness')}
             </button>
@@ -558,6 +560,11 @@ export default function HUD({ simpleMode = false }) {
         )}
         {!deployPhase && (selectedSearchRadar || selectedBattery) && <section className="hud-section">
           <div className="hud-eyebrow">{(selectedSearchRadar ?? selectedBattery).id}</div>
+          {selectedBattery && !activeTrack && selectedBattery.weaponType !== 'GUN_AA' && <>
+            <small>{localizeEngagementStatus(getBatteryEngagementStatus(selectedBattery, null), language)}</small>
+            <button className="engage-button" disabled={!canManualLaunch(selectedBattery, activeTrack)}
+              onClick={fireMissile}>{ru ? 'Пуск' : 'Launch'}</button>
+          </>}
           <button className="engage-button" onClick={() => {
             const state = useGameStore.getState();
             useEngine.getState().releaseControllableControl();
@@ -641,7 +648,7 @@ export default function HUD({ simpleMode = false }) {
           <span className="u-mono">{formatTime(simulationTime)} <i>Z</i></span>
         </div>
         <div className="sim-controls__speeds">
-          {[0, 1, 2, 5, 10, 20].map(speed => (
+          {[0, 0.5, 1, 2, 5, 10, 20].map(speed => (
             <button
               key={speed}
               onClick={() => setTimeScale(speed)}

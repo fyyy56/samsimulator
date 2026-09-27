@@ -47,6 +47,8 @@ export function createInterceptorGuidance(track, simulationTime, interceptSoluti
     reportedVerticalSpeedMps: track.reportedVerticalSpeedMps ?? 0,
     estimatedTurnRateDegPerSec: track.estimatedTurnRateDegPerSec ?? 0,
     trackLastUpdateTime: track.lastUpdateTime,
+    trackStateTime: track.lastPredictionTime ?? track.lastUpdateTime ?? simulationTime,
+    networkTrackSourceRadarId: track.sourceRadarId ?? null,
     commandPosition,
     commandHeading: launchPosition
       ? getBearing(launchPosition.lat, launchPosition.lng, commandPosition.lat, commandPosition.lng)
@@ -64,7 +66,8 @@ const getNavigationConstant = (physics, state) => {
   return physics.navigationConstantMidcourse ?? physics.referenceProportionalNavigationConstant ?? 3.8;
 };
 
-const canAttemptReattack = ({ interceptor, solution, physics, turnRateDegPerSec }) => {
+const canAttemptReattack = ({ interceptor, solution, physics, turnRateDegPerSec,
+  distanceKm, networkTrack, simulationTime }) => {
   const timeLeft = Math.max(0, physics.maxFlightTimeSec - interceptor.flightTime);
   const rangeLeft = Math.max(0, physics.maxGameRangeKm - interceptor.distanceTraveledKm);
   const requiredTurnDeg = Math.abs(solution.directionErrorDeg ?? solution.headingErrorDeg);
@@ -74,12 +77,24 @@ const canAttemptReattack = ({ interceptor, solution, physics, turnRateDegPerSec 
   const projectedTurnEnergyCost = requiredTurnDeg / 180
     * (physics.turnEnergyLossFactor ?? 0.02) * 4;
   const projectedEnergyRatio = Math.max(0, energyRatio - projectedTurnEnergyCost);
-  return solution.status !== INTERCEPT_SOLUTION_STATUS.INVALID
-    && timeLeft > Math.max(2, solution.timeToGoSec * 0.75)
-    && rangeLeft > (solution.interceptDistanceKm + turnArcDistanceKm) * 1.12
-    && interceptor.speedKmh / 3.6 > physics.minimumEffectiveSpeedMps * 1.08
-    && projectedEnergyRatio > 0.14
-    && turnTime < Math.min(timeLeft * 0.38, 10);
+  const measurementAgeSec = simulationTime - (networkTrack?.lastUpdateTime ?? -Infinity);
+  const maximumTrackAgeSec = Math.max(2, (networkTrack?.expectedRevisitSec ?? 1.5) * 1.8);
+  const downwardSpeedMps = Math.max(0, -(interceptor.verticalSpeedMps ?? 0));
+  const timeToGroundSec = downwardSpeedMps > 1
+    ? (interceptor.altitudeM ?? 0) / downwardSpeedMps : Infinity;
+  // A just-passed target often makes the current *forward* intercept invalid.
+  // Re-entry is gated by remaining kinematics and a live external measurement,
+  // then solved afresh rather than reusing that terminal solution.
+  return Boolean(networkTrack && networkTrack.state !== TRACK_STATE.LOST)
+    && measurementAgeSec <= maximumTrackAgeSec
+    && solution.status !== INTERCEPT_SOLUTION_STATUS.INVALID
+    && timeToGroundSec > turnTime + 1
+    && timeLeft > Math.max(2, turnTime + distanceKm * 1000
+      / Math.max(interceptor.speedKmh / 3.6, 1) * 0.6)
+    && rangeLeft > (distanceKm + turnArcDistanceKm) * 1.08
+    && interceptor.speedKmh / 3.6 > physics.minimumEffectiveSpeedMps * 1.02
+    && projectedEnergyRatio > 0.1
+    && turnTime < Math.min(timeLeft * 0.62, 16);
 };
 
 const disabledResult = (interceptor, guidance, physics, heading) => ({
@@ -99,13 +114,17 @@ const disabledResult = (interceptor, guidance, physics, heading) => ({
 
 export function advanceInterceptorGuidance({ interceptor, track, simulationTime, deltaTimeSec, physics }) {
   let guidance = { ...interceptor.guidance };
+  guidance.networkTrackSourceRadarId = track?.sourceRadarId
+    ?? guidance.networkTrackSourceRadarId ?? null;
   const guidanceTrack = getSeekerGuidanceTrack(interceptor.seeker, track);
   const inputGuidanceSource = guidanceTrack?.guidanceSource
     ?? SEEKER_GUIDANCE_SOURCE.NETWORK_TRACK;
   const guidanceSourceChanged = inputGuidanceSource !== guidance.guidanceSource;
   const activeTrack = guidanceTrack && guidanceTrack.state !== TRACK_STATE.LOST;
+  const trackStateTime = guidanceTrack?.lastPredictionTime
+    ?? guidanceTrack?.lastUpdateTime ?? simulationTime;
   const receivedMeasurement = activeTrack && (guidanceSourceChanged
-    || guidanceTrack.lastUpdateTime > guidance.trackLastUpdateTime);
+    || trackStateTime > (guidance.trackStateTime ?? guidance.trackLastUpdateTime ?? -Infinity));
   if (receivedMeasurement) {
     guidance = {
       ...guidance,
@@ -117,6 +136,7 @@ export function advanceInterceptorGuidance({ interceptor, track, simulationTime,
       reportedVerticalSpeedMps: guidanceTrack.reportedVerticalSpeedMps ?? 0,
       estimatedTurnRateDegPerSec: guidanceTrack.estimatedTurnRateDegPerSec ?? 0,
       trackLastUpdateTime: guidanceTrack.lastUpdateTime,
+      trackStateTime,
       trackLostSince: null,
       guidanceSource: inputGuidanceSource,
     };
@@ -141,7 +161,7 @@ export function advanceInterceptorGuidance({ interceptor, track, simulationTime,
     return disabledResult(interceptor, guidance, physics, interceptor.initialLaunchHeading ?? interceptor.heading);
   }
 
-  const targetState = estimateTargetState(guidance, simulationTime);
+  let targetState = estimateTargetState(guidance, simulationTime);
   const distanceKm = getDistanceKm(interceptor.lat, interceptor.lng,
     targetState.position.lat, targetState.position.lng);
   const previousTgo = guidance.interceptSolution?.timeToGoSec ?? Infinity;
@@ -166,19 +186,63 @@ export function advanceInterceptorGuidance({ interceptor, track, simulationTime,
     targetState.position.lat, targetState.position.lng);
   const passedTarget = Math.abs(normalizeHeadingDelta(bearingToTrack - interceptor.heading)) > 95
     && (interceptor.timeSinceClosestApproachSec ?? 0) >= physics.postPassContinueSec;
-  let guidanceState = terminal ? INTERCEPTOR_GUIDANCE_STATE.TERMINAL : INTERCEPTOR_GUIDANCE_STATE.MIDCOURSE;
+  let guidanceState = (guidance.reattackCount ?? 0) > 0
+    ? INTERCEPTOR_GUIDANCE_STATE.REATTACK
+    : terminal ? INTERCEPTOR_GUIDANCE_STATE.TERMINAL : INTERCEPTOR_GUIDANCE_STATE.MIDCOURSE;
   if (guidance.trackLostSince !== null) guidanceState = INTERCEPTOR_GUIDANCE_STATE.COAST;
   let command = computeProportionalNavigation({ interceptor, targetState, solution,
     navigationConstant: getNavigationConstant(physics, guidanceState), physics, terminal });
 
+  if ((guidance.reattackCount ?? 0) > 0
+    && Math.abs(normalizeHeadingDelta(bearingToTrack - interceptor.heading)) < 75) {
+    guidance.reattackTurnedTowardTarget = true;
+  }
   if (passedTarget) {
-    if (!canAttemptReattack({ interceptor, solution, physics,
-      turnRateDegPerSec: command.turnPerformance.effectiveTurnRateDegPerSec })) {
+    if ((guidance.reattackCount ?? 0) > 0 && guidance.reattackTurnedTowardTarget) {
       return { guidance, heading: interceptor.heading, desiredHeading: solution.desiredHeading,
         headingCorrectionDeg: solution.headingErrorDeg,
         guidanceState: INTERCEPTOR_GUIDANCE_STATE.INTERCEPT_LOST, guidanceEnabled: true,
         interceptSolutionStatus: solution.status,
         failedReason: INTERCEPTOR_FAILURE_REASON.INTERCEPT_LOST };
+    }
+    if (!(guidance.reattackCount ?? 0)) {
+      const freshTargetState = estimateTargetState({
+        ...guidance,
+        reportedPosition: track?.reportedPosition ?? guidance.reportedPosition,
+        reportedHeading: track?.reportedHeading ?? guidance.reportedHeading,
+        reportedSpeedKmh: track?.reportedSpeedKmh ?? guidance.reportedSpeedKmh,
+        trackLastUpdateTime: track?.lastUpdateTime ?? guidance.trackLastUpdateTime,
+        trackStateTime: track?.lastPredictionTime ?? track?.lastUpdateTime
+          ?? guidance.trackStateTime,
+      }, simulationTime);
+      const freshSolution = solveDynamicIntercept({ interceptor,
+        targetState: freshTargetState, physics, previousSolution: null, terminal: false });
+      if (!canAttemptReattack({ interceptor, solution: freshSolution, physics,
+        turnRateDegPerSec: command.turnPerformance.effectiveTurnRateDegPerSec,
+        distanceKm, networkTrack: track, simulationTime })) {
+        return { guidance, heading: interceptor.heading, desiredHeading: solution.desiredHeading,
+          headingCorrectionDeg: solution.headingErrorDeg,
+          guidanceState: INTERCEPTOR_GUIDANCE_STATE.INTERCEPT_LOST, guidanceEnabled: true,
+          interceptSolutionStatus: solution.status,
+          failedReason: INTERCEPTOR_FAILURE_REASON.INTERCEPT_LOST };
+      }
+      solution = freshSolution;
+      targetState = freshTargetState;
+      guidance = { ...guidance,
+        reportedPosition: { ...track.reportedPosition },
+        reportedHeading: track.reportedHeading,
+        reportedSpeedKmh: track.reportedSpeedKmh,
+        trackLastUpdateTime: track.lastUpdateTime,
+        trackStateTime: track.lastPredictionTime ?? track.lastUpdateTime,
+        guidanceSource: SEEKER_GUIDANCE_SOURCE.NETWORK_TRACK,
+        interceptSolution: freshSolution,
+        commandPosition: freshSolution.interceptPoint,
+        commandHeading: freshSolution.desiredHeading,
+        lastCommandTime: simulationTime,
+        reattackCount: 1,
+        reattackStartedAt: simulationTime,
+        reattackTurnedTowardTarget: false,
+      };
     }
     guidanceState = INTERCEPTOR_GUIDANCE_STATE.REATTACK;
     command = computeProportionalNavigation({ interceptor, targetState, solution,
@@ -211,8 +275,38 @@ export function advanceInterceptorGuidance({ interceptor, track, simulationTime,
     guidance = { ...guidance, interceptSolution: solution };
   }
 
-  const autopilot = applyMissileAutopilot({ interceptor, command, deltaTimeSec, physics });
-  const interceptQuality = calculateInterceptQuality({ solution, command, interceptor, physics });
+  // The cold eject/orient sequence needs a short ignition handoff. Hot launch
+  // interceptors already have an autopilot response limit, so a second command
+  // fade after LAUNCH_EXIT/PITCH_OVER only delays their first real correction.
+  const launchBlendDurationSec = interceptor.launchProfile?.coldLaunch
+    ? Math.max(0.1, interceptor.launchProfile.launchGuidanceBlendSec ?? 0.5)
+    : 0;
+  const launchBlendElapsedSec = interceptor.guidanceBlendStartedAtFlightTime == null
+    ? launchBlendDurationSec
+    : Math.max(0, interceptor.flightTime - interceptor.guidanceBlendStartedAtFlightTime);
+  const launchBlendLinear = launchBlendDurationSec > 0
+    ? Math.min(1, launchBlendElapsedSec / launchBlendDurationSec) : 1;
+  const launchGuidanceBlend = launchBlendLinear * launchBlendLinear * (3 - 2 * launchBlendLinear);
+  const autopilotCommand = launchGuidanceBlend >= 1 ? command : {
+    ...command,
+    commandedAccelerationVectorMps2: {
+      eastMps: command.commandedAccelerationVectorMps2.eastMps * launchGuidanceBlend,
+      northMps: command.commandedAccelerationVectorMps2.northMps * launchGuidanceBlend,
+      upMps: command.commandedAccelerationVectorMps2.upMps * launchGuidanceBlend,
+    },
+    commandedLateralAccelerationMps2:
+      command.commandedLateralAccelerationMps2 * launchGuidanceBlend,
+    commandedHorizontalAccelerationMps2:
+      command.commandedHorizontalAccelerationMps2 * launchGuidanceBlend,
+    commandedVerticalAccelerationMps2:
+      command.commandedVerticalAccelerationMps2 * launchGuidanceBlend,
+    commandedTotalAccelerationMps2:
+      command.commandedTotalAccelerationMps2 * launchGuidanceBlend,
+  };
+  const autopilot = applyMissileAutopilot({ interceptor, command: autopilotCommand,
+    deltaTimeSec, physics });
+  const interceptQuality = calculateInterceptQuality({ solution, command: autopilotCommand,
+    interceptor, physics });
   return {
     guidance, heading: autopilot.heading, desiredHeading: solution.desiredHeading,
     flightPathAngleDeg: autopilot.flightPathAngleDeg,
@@ -237,11 +331,12 @@ export function advanceInterceptorGuidance({ interceptor, track, simulationTime,
     losElevationDeg: command.losElevationDeg,
     losAzimuthRateDegPerSec: command.losAzimuthRateDegPerSec,
     losElevationRateDegPerSec: command.losElevationRateDegPerSec,
-    commandedAccelerationVectorMps2: command.commandedAccelerationVectorMps2,
-    commandedLateralAccelerationMps2: command.commandedLateralAccelerationMps2,
-    commandedHorizontalAccelerationMps2: command.commandedHorizontalAccelerationMps2,
-    commandedVerticalAccelerationMps2: command.commandedVerticalAccelerationMps2,
-    commandedTotalAccelerationMps2: command.commandedTotalAccelerationMps2,
+    commandedAccelerationVectorMps2: autopilotCommand.commandedAccelerationVectorMps2,
+    commandedLateralAccelerationMps2: autopilotCommand.commandedLateralAccelerationMps2,
+    commandedHorizontalAccelerationMps2: autopilotCommand.commandedHorizontalAccelerationMps2,
+    commandedVerticalAccelerationMps2: autopilotCommand.commandedVerticalAccelerationMps2,
+    commandedTotalAccelerationMps2: autopilotCommand.commandedTotalAccelerationMps2,
+    launchGuidanceBlend,
     actualAccelerationVectorMps2: autopilot.actualAccelerationVectorMps2,
     actualLateralAccelerationMps2: autopilot.actualLateralAccelerationMps2,
     actualHorizontalAccelerationMps2: autopilot.actualHorizontalAccelerationMps2,

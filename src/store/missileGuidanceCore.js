@@ -101,7 +101,10 @@ export function projectEstimatedTarget(targetState, seconds) {
 }
 
 export function estimateTargetState(guidance, simulationTime) {
-  const measurementAgeSec = Math.max(0, simulationTime - guidance.trackLastUpdateTime);
+  // Network tracks are already propagated between scans. Extrapolate from the
+  // estimate timestamp, never from the older radar measurement timestamp.
+  const measurementAgeSec = Math.max(0, simulationTime
+    - (guidance.trackStateTime ?? guidance.trackLastUpdateTime ?? simulationTime));
   const measuredState = {
     position: guidance.reportedPosition,
     heading: guidance.reportedHeading ?? 0,

@@ -104,6 +104,11 @@ export const getRolePriorityTier = (battery, target) => {
     if (target?.type === SIMPLE_TARGET_TYPE.CRUISE_MISSILE) return 2;
     return 4;
   }
+  if (category === 'TOR_M1') {
+    if (target?.type === SIMPLE_TARGET_TYPE.UAV) return 0;
+    if (target?.type === SIMPLE_TARGET_TYPE.CRUISE_MISSILE) return 1;
+    return 5;
+  }
   if (isPatriotBattery(battery)) {
     if (isBallisticTarget(target)) return 0;
     if (target?.type === SIMPLE_TARGET_TYPE.CRUISE_MISSILE) return 3;
@@ -160,7 +165,10 @@ export function buildEngagementRegistry({ missiles = [], pendingLaunches = [], l
   };
   launchQueue.forEach(item => add(item, 'queued'));
   pendingLaunches.forEach(item => add(item, 'preparing'));
-  missiles.forEach(item => add(item, 'inFlight'));
+  // A missed round can remain visible briefly, but it no longer occupies a
+  // fire-control channel or prevents AUTO from considering a new shot.
+  missiles.filter(item => !['MISSED', 'SELF_DESTRUCT', 'DESTROYED'].includes(
+    item.lifecycleState)).forEach(item => add(item, 'inFlight'));
   gunEngagements.forEach(item => add({
     ...item,
     sourceBatteryId: item.batteryId,
@@ -170,6 +178,9 @@ export function buildEngagementRegistry({ missiles = [], pendingLaunches = [], l
 }
 
 export function getInterceptorEngagementPolicy(battery) {
+  if (battery?.category === 'TOR_M1') {
+    return { maximumActiveInterceptors: 1, maximumAutomaticAttempts: 2 };
+  }
   if (battery?.category === 'LONG' || isPatriotBattery(battery)) {
     return { maximumActiveInterceptors: 2, maximumAutomaticAttempts: 2 };
   }

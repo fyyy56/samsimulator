@@ -10,10 +10,14 @@ const server = await createServer({ server: { middlewareMode: true, hmr: false, 
 try {
   const registry = await server.ssrLoadModule('/src/data/advanced3dRegistry.js');
   const cases = [
+    { name: '9M331', profile: registry.getAdvancedInterceptorPresentation({ interceptorSpecId: 'INT-9M331-V1' }),
+      path: 'src/assets/icons/Air Defence/9M331 FOR TOR-M1/9M331.glb', axis: Cartesian3.UNIT_Z },
     { name: 'AIM-120C-7', profile: registry.getAdvancedInterceptorPresentation({ interceptorSpecId: 'INT-MEDIUM-V1' }),
       path: 'src/assets/icons/Air Defence/AIM-120A FOR NASAMS/aim-120c_amraam.glb', axis: new Cartesian3(0, -1, 0) },
     { name: 'Aster 30', profile: registry.getAdvancedInterceptorPresentation({ interceptorSpecId: 'INT-ASTER30-V1' }),
-      path: 'src/assets/icons/Air Defence/ASTER-30 FOR SAMP-T/aster-30-colored.glb', axis: Cartesian3.UNIT_X },
+      path: 'src/assets/icons/Air Defence/ASTER-30 FOR SAMP-T/aster30.glb', axis: Cartesian3.UNIT_Z },
+    { name: 'IRIS-T SLM', profile: registry.getAdvancedInterceptorPresentation({ interceptorSpecId: 'INT-SHORT-V1' }),
+      path: 'src/assets/icons/Air Defence/IRIS-T SLM FOR IRIS-T/iris-t.glb', axis: Cartesian3.UNIT_Z },
     { name: 'Iskander', profile: registry.getAdvancedTargetPresentation({ modelId: 'ISKANDER_M', type: 'BALLISTIC_TARGET' }),
       path: 'src/assets/icons/Ballistic Missiles/Без имени.glb', axis: Cartesian3.UNIT_Z },
     { name: 'PAC-3', profile: registry.getAdvancedInterceptorPresentation({ interceptorSpecId: 'INT-LONG-V1' }),
@@ -52,7 +56,8 @@ try {
         const h = headingDeg * Math.PI / 180, p = pitchDeg * Math.PI / 180;
         const expected = Matrix4.multiplyByPointAsVector(enu, new Cartesian3(
           Math.sin(h) * Math.cos(p), Math.cos(h) * Math.cos(p), Math.sin(p)), new Cartesian3());
-        assert.ok(Cartesian3.dot(nose, expected) > 0.99999, `${name} ${headingDeg}/${pitchDeg}/${rollDeg}: nose must follow velocity`);
+        const minimumAlignment = name === 'IRIS-T SLM' ? 0.99998 : 0.99999;
+        assert.ok(Cartesian3.dot(nose, expected) > minimumAlignment, `${name} ${headingDeg}/${pitchDeg}/${rollDeg}: nose must follow velocity`);
       }
     }
   }

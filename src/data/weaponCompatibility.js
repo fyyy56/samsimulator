@@ -5,6 +5,7 @@ export const AIR_DEFENSE_PLATFORM = Object.freeze({
   GEPARD: 'GEPARD',
   SAMP_T: 'SAMP_T',
   GAZ_DSHK: 'GAZ_DSHK',
+  TOR_M1: 'TOR_M1',
 });
 
 export const WEAPON_COMPATIBILITY = Object.freeze({
@@ -37,6 +38,11 @@ export const WEAPON_COMPATIBILITY = Object.freeze({
     category: 'GAZ',
     launcherIds: Object.freeze(['GAZ_DSHK']),
     interceptorSpecIds: Object.freeze([]),
+  }),
+  [AIR_DEFENSE_PLATFORM.TOR_M1]: Object.freeze({
+    category: 'TOR_M1',
+    launcherIds: Object.freeze(['TOR_M1_UNIT']),
+    interceptorSpecIds: Object.freeze(['INT-9M331-V1']),
   }),
 });
 

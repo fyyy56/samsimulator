@@ -1,4 +1,5 @@
-import { GAME_MODE, UI_LANGUAGE, useGameStore } from '../store/gameStore.js';
+import { UI_LANGUAGE, useGameStore } from '../store/gameStore.js';
+import { useEngine } from '../store/engine.js';
 import { DesignModeButton } from '../ui/DesignModeOverlay.jsx';
 import { useDesignStore, useDesignSurface } from '../store/designStore.js';
 
@@ -24,14 +25,36 @@ export default function MainMenu() {
   const settingsDesign = useDesignSurface('menu-tab-settings');
   const quickDesign = useDesignSurface('menu-quick-tools');
   const designEnabled = useDesignStore(state => state.enabled);
-  const menuItems = [
+  const twoDItems = [
     {
-      id: 'start',
-      title: ru ? 'Начать игру' : 'Start game',
+      id: 'game-2d',
+      title: ru ? 'ИГРА / COMMAND' : 'GAME / COMMAND',
       meta: ru ? ['Command Mode', 'Украинский театр', 'Действующая симуляция'] : ['Command Mode', 'Ukraine theater', 'Live simulation'],
       action: store => store.startScenario(null),
       available: true,
     },
+    {
+      id: 'sandbox-2d', title: ru ? 'ПОЛИГОН / SANDBOX' : 'SANDBOX / POLYGON',
+      action: store => store.openSandbox(), available: true,
+    },
+  ];
+  const advancedItems = [
+    {
+      id: 'advanced-3d', title: ru ? 'СИМУЛЯЦИЯ' : 'SIMULATION',
+      action: store => {
+        useEngine.getState().resetScenario('SIMPLE');
+        store.openAdvanced3D();
+      }, available: true,
+    },
+    {
+      id: 'sandbox-3d', title: ru ? '3D ПОЛИГОН' : '3D SANDBOX',
+      action: store => {
+        useEngine.getState().resetScenario('SANDBOX');
+        store.openAdvancedSandbox();
+      }, available: true,
+    },
+  ];
+  const contentItems = [
     {
       id: 'scenarios', title: ru ? 'Сценарии' : 'Scenarios',
       meta: [ru ? 'Операции и локальная библиотека' : 'Operations and local library'], action: store => store.openScenarioLibrary(), available: true,
@@ -54,18 +77,20 @@ export default function MainMenu() {
       </header>
 
       <section className="mode-selector" aria-label="Game modes" data-design-id="menu-navigation" data-design-name="Навигация меню" style={selectorDesign}>
-        {menuItems.map(item => <MenuModeCard key={item.id} item={item} gameStore={gameStore} />)}
+        <div className="mode-selector__group"><span>2D</span>
+          {twoDItems.map(item => <MenuModeCard key={item.id} item={item} gameStore={gameStore} />)}
+        </div>
+        <div className="mode-selector__group"><span>ADVANCED 3D</span>
+          {advancedItems.map(item => <MenuModeCard key={item.id} item={item} gameStore={gameStore} />)}
+        </div>
+        {contentItems.map(item => <MenuModeCard key={item.id} item={item} gameStore={gameStore} />)}
         <button className="mode-card mode-card--settings" data-design-id="menu-tab-settings" data-design-name="Настройки" style={settingsDesign} onClick={() => { if (!designEnabled) gameStore.openSettings(); }}>
           <span className="mode-card__content"><strong>{ru ? 'Настройки' : 'Settings'}</strong></span>
         </button>
       </section>
 
       <div className="main-menu__quick-actions" data-design-id="menu-quick-tools" data-design-name="Инструменты" style={quickDesign}>
-        <button onClick={gameStore.openSandbox}>{ru ? 'Полигон' : 'Sandbox'}</button>
         <button onClick={gameStore.openDeveloperMode}>{ru ? 'Режим разработчика' : 'Developer Mode'}</button>
-        <button onClick={() => gameStore.selectMode(GAME_MODE.ADVANCED)}>
-          {ru ? '3D РЕЖИМ' : '3D MODE'}
-        </button>
         <DesignModeButton compact />
       </div>
     </main>

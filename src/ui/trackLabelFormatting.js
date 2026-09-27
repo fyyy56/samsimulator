@@ -11,7 +11,9 @@ export const getTrackLabelQuality = track => {
 
 export const getShortTrackId = id => String(id ?? 'T-???').replace(/^TRK-/, 'T-');
 
-export const formatTrackLabelData = (track, distanceKm = null) => {
+export const formatTrackLabelData = (track, distanceKm = null, language = 'EN') => {
+  const ru = language === 'RU';
+  const units = ru ? { km: 'км', m: 'м', mps: 'м/с' } : { km: 'km', m: 'm', mps: 'm/s' };
   const quality = getTrackLabelQuality(track);
   const prefix = quality.approximate ? '~' : '';
   const altitudeM = track?.reportedAltitudeM ?? track?.reportedPosition?.altitudeM ?? track?.reportedPosition?.alt ?? null;
@@ -26,19 +28,19 @@ export const formatTrackLabelData = (track, distanceKm = null) => {
     ...quality,
     id: getShortTrackId(track?.id),
     distanceText: finite(distanceKm)
-      ? `${prefix}${distanceKm.toFixed(quality.approximate ? 1 : 3)} km`
-      : `${prefix}— km`,
-    altitudeText: roundedAltitudeM == null ? `${prefix}— m` : `${prefix}${roundedAltitudeM} m`,
-    speedText: roundedSpeedMps == null ? `${prefix}— m/s` : `${prefix}${roundedSpeedMps} m/s`,
+      ? `${prefix}${distanceKm.toFixed(quality.approximate ? 1 : 3)} ${units.km}`
+      : `${prefix}— ${units.km}`,
+    altitudeText: roundedAltitudeM == null ? `${prefix}— ${units.m}` : `${prefix}${roundedAltitudeM} ${units.m}`,
+    speedText: roundedSpeedMps == null ? `${prefix}— ${units.mps}` : `${prefix}${roundedSpeedMps} ${units.mps}`,
   };
 };
 
-export const formatTrackCesiumLabel = (track, distanceKm = null, displayName = null) => {
-  const data = formatTrackLabelData(track, distanceKm);
+export const formatTrackCesiumLabel = (track, distanceKm = null, displayName = null, language = 'EN') => {
+  const data = formatTrackLabelData(track, distanceKm, language);
   return [
     `${data.id}${displayName ? ` · ${displayName}` : ''}`,
     data.distanceText,
     data.altitudeText,
-    `${data.speedText}${data.approximate ? ' · EST' : ''}`,
+    `${data.speedText}${data.approximate ? (language === 'RU' ? ' · ОЦЕНКА' : ' · EST') : ''}`,
   ].join('\n');
 };

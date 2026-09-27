@@ -50,10 +50,13 @@ assert.match(approximateLabel.speedText, /^~/,
   'Low-quality/stale TrackData is visibly approximate across render modes');
 
 const commandSource = readFileSync(new URL('../src/scenes/SimpleModeScene.jsx', import.meta.url), 'utf8');
-assert.match(commandSource, /setSelectedControllableEntity\(entity\.id\)[\s\S]*setControlledControllableEntity\(entity\.id\)[\s\S]*CONTROLLABLE_CAMERA_MODE\.FPV[\s\S]*openFpvFeed/,
-  'Clicking the own FPV marker performs the complete temporary COMMAND feed handoff');
-assert.match(commandSource, /duration: 900,[\s\S]{0,300}openFpvFeed[\s\S]{0,120}, 920\);/,
-  'COMMAND briefly focuses the launch area before entering the FPV feed');
+assert.match(commandSource, /controllable-command-marker[\s\S]{0,500}setSelectedControllableEntity\(entity\.id\)/,
+  'Clicking the own FPV marker opens its COMMAND unit card');
+assert.match(commandSource, /const openCommandFpv = entity =>[\s\S]*setControlledControllableEntity\(entity\.id\)[\s\S]*CONTROLLABLE_CAMERA_MODE\.FPV[\s\S]*openFpvFeed/,
+  'The explicit OPEN FPV action performs the temporary COMMAND feed handoff');
+const openFpvAction = commandSource.slice(commandSource.indexOf('const openCommandFpv = entity =>'), commandSource.indexOf('  return (', commandSource.indexOf('const openCommandFpv = entity =>')));
+assert.doesNotMatch(openFpvAction, /flyTo|setTimeout/,
+  'COMMAND enters onboard feed immediately without changing the saved map view');
 assert.match(commandSource, /const sweepWidths = isElectronic[\s\S]*radar\.scanState\.currentAzimuth/,
   'Mechanical and electronic radar visuals use authoritative scan state');
 assert.doesNotMatch(commandSource, /if \(!isElectronic\) \{[\s\S]{0,400}kind: 'sweep'/,

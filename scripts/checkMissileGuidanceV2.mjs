@@ -8,6 +8,7 @@ import {
 } from '../src/store/interceptorGuidance.js';
 import { advanceInterceptorFlight } from '../src/store/interceptorPhysics.js';
 import { INTERCEPTOR_LAUNCH_PHASE } from '../src/store/interceptorLaunch.js';
+import { estimateTargetState } from '../src/store/missileGuidanceCore.js';
 import { TRACK_STATE } from '../src/store/trackSystem.js';
 
 const DT = 0.05;
@@ -21,6 +22,15 @@ const makeTrack = (target, time) => ({
   estimatedTurnRateDegPerSec: target.turnRateDegPerSec ?? 0,
   lastUpdateTime: time,
 });
+
+const coastOrigin = { lat: 49, lng: 31 };
+const coastPosition = getDestinationPoint(coastOrigin.lat, coastOrigin.lng, 90, 1);
+const coastedTrack = { ...makeTrack({ ...coastPosition, altitudeM: 1000,
+  heading: 90, speedKmh: 360 }, 0), lastPredictionTime: 10 };
+const coastGuidance = createInterceptorGuidance(coastedTrack, 10);
+assert.ok(getDistanceKm(estimateTargetState(coastGuidance, 10).position.lat,
+  estimateTargetState(coastGuidance, 10).position.lng, coastPosition.lat,
+  coastPosition.lng) < 0.001, 'coasted Track position must not be predicted twice');
 
 const simulate = ({ specId, targetHeading, targetSpeedKmh, turnRateDegPerSec = 0,
   missileHeading = 0, targetEastKm = 10, targetNorthKm = 10 }) => {
@@ -126,6 +136,10 @@ const reattackProbe = (specId, energyRatio, speedMultiplier, heading = 180) => {
 const reattack = reattackProbe('INT-ASTER30-V1', 0.7, 2.5, 180);
 assert.equal(reattack.guidanceState, INTERCEPTOR_GUIDANCE_STATE.REATTACK,
   'G: energetic missile may enter REATTACK');
+assert.equal(reattack.guidance.reattackCount, 1,
+  'G: a first miss starts exactly one new attack');
+assert.equal(reattack.guidance.guidanceSource, 'NETWORK_TRACK',
+  'G: the second solution uses a fresh external track');
 const lost = reattackProbe('INT-MEDIUM-V1', 0.03, 0.7, 180);
 assert.equal(lost.guidanceState, INTERCEPTOR_GUIDANCE_STATE.INTERCEPT_LOST,
   'H: depleted missile enters INTERCEPT_LOST');

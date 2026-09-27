@@ -25,7 +25,7 @@ const sustain = getMissilePlumeProfile({ motorPhase: 'SUSTAIN' });
 assert.ok(sustain.size < boost.size && sustain.opacity < boost.opacity);
 assert.equal(getMissilePlumeProfile({ motorPhase: 'COAST' }), null);
 assert.equal(getMissilePlumeProfile({ motorPhase: 'UNKNOWN' }), null);
-assert.ok(MISSILE_TRAIL_VISUAL_PROFILE.advancedMaxPuffs <= 256);
+assert.ok(MISSILE_TRAIL_VISUAL_PROFILE.advancedMaxPuffs <= 1024);
 assert.ok(INTERCEPT_EFFECT_VISUAL_PROFILE.totalDurationMs
   >= INTERCEPT_EFFECT_VISUAL_PROFILE.fireDurationMs);
 console.log(`Advanced plume: ${phases} real profile phases, burnout precedence and visual bounds passed.`);

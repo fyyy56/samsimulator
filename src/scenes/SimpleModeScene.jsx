@@ -58,7 +58,7 @@ import {
   TERMINAL_CORRECTION_COUNTS,
   TERMINAL_CORRECTION_SIDES,
 } from '../data/ballisticTargetProfiles.js';
-import { localizeObjective } from '../data/uiLocalization.js';
+import { localizeObjective, localizeTechnicalTerm } from '../data/uiLocalization.js';
 import { getMapObjectSizePx, MAP_OBJECT_CLASS } from '../data/mapVisualProfiles.js';
 import { useContentStore } from '../store/contentStore.js';
 import { useProtectedObjectStore } from '../store/protectedObjectStore.js';
@@ -69,7 +69,9 @@ import { getLaunchProfile } from '../store/launchProfileStore.js';
 import { getVisualLaunchOffset } from '../ui/launchVisuals.js';
 import InterpolatedMapMarker from '../ui/InterpolatedMapMarker.jsx';
 import { formatTrackLabelData } from '../ui/trackLabelFormatting.js';
-import { CONTROLLABLE_CAMERA_MODE } from '../store/controllableAirEntity.js';
+import { CONTROLLABLE_CAMERA_MODE, CONTROLLABLE_CONTROL_MODE } from '../store/controllableAirEntity.js';
+import { useSandboxSpawnDraftStore } from '../store/sandboxSpawnDraftStore.js';
+import { CONTROLLABLE_AIR_PROFILE_IDS } from '../data/controllableAirProfiles.js';
 import { getInterpolatedMarkerPosition } from '../ui/markerInterpolationRegistry.js';
 import { registerMarkerInterpolator } from '../ui/markerAnimationLoop.js';
 import {
@@ -219,8 +221,8 @@ function TargetHoverData({ speedKmh, distanceKm, ru }) {
   );
 }
 
-function CommandTrackLabel({ track, distanceKm, target }) {
-  const data = formatTrackLabelData(track, distanceKm);
+function CommandTrackLabel({ track, distanceKm, target, language }) {
+  const data = formatTrackLabelData(track, distanceKm, language);
   const displayName = track.state === TRACK_STATE.IDENTIFIED && target
     ? getTargetDisplayName(target)
     : null;
@@ -228,7 +230,7 @@ function CommandTrackLabel({ track, distanceKm, target }) {
     <b>{data.id}{displayName ? ` · ${displayName}` : ''}</b>
     <small>{data.distanceText}</small>
     <small>{data.altitudeText}</small>
-    <small>{data.speedText}{data.approximate ? ' · EST' : ''}</small>
+    <small>{data.speedText}{data.approximate ? ` · ${localizeTechnicalTerm('EST', language)}` : ''}</small>
   </span>;
 }
 
@@ -241,7 +243,6 @@ const getTargetLabel = (type, modelId = null) => {
 
 function SimpleModeSceneContent({ sandboxMode = false, developerMode = false, resumeSimulation = false }) {
   const returnToMenu = useGameStore(state => state.returnToMenu);
-  const openAdvancedPreview = useGameStore(state => state.openAdvancedPreview);
   const openFpvFeed = useGameStore(state => state.openFpvFeed);
   const commandViewState = useGameStore(state => state.commandViewState);
   const saveCommandViewState = useGameStore(state => state.saveCommandViewState);
@@ -277,6 +278,7 @@ function SimpleModeSceneContent({ sandboxMode = false, developerMode = false, re
   const selectedMissileId = useEngine(state => state.selectedMissileId);
   const selectedBatteryId = useEngine(state => state.selectedBatteryId);
   const selectedSearchRadarId = useEngine(state => state.selectedSearchRadarId);
+  const selectedControllableEntityId = useEngine(state => state.selectedControllableEntityId);
   const deployPhase = useEngine(state => state.deployPhase);
   const handleMapClick = useEngine(state => state.handleMapClick);
   const setSelectedTrack = useEngine(state => state.setSelectedTrack);
@@ -285,8 +287,11 @@ function SimpleModeSceneContent({ sandboxMode = false, developerMode = false, re
   const setSelectedSearchRadar = useEngine(state => state.setSelectedSearchRadar);
   const setSelectedControllableEntity = useEngine(state => state.setSelectedControllableEntity);
   const setControlledControllableEntity = useEngine(state => state.setControlledControllableEntity);
+  const releaseControllableControl = useEngine(state => state.releaseControllableControl);
   const setControllableCameraMode = useEngine(state => state.setControllableCameraMode);
-  const setControllableSelectedTrack = useEngine(state => state.setControllableSelectedTrack);
+  const setControllableControlMode = useEngine(state => state.setControllableControlMode);
+  const setControllableNavigationWaypoint = useEngine(state => state.setControllableNavigationWaypoint);
+  const setControllableNavigationTrack = useEngine(state => state.setControllableNavigationTrack);
   const setTimeScale = useEngine(state => state.setTimeScale);
   const spawnSandboxTargets = useEngine(state => state.spawnSandboxTargets);
   const rotateInstalledComponent = useEngine(state => state.rotateInstalledComponent);
@@ -297,15 +302,18 @@ function SimpleModeSceneContent({ sandboxMode = false, developerMode = false, re
   const mapTheme = useViewStore(state => state.simpleMapTheme);
   const setMapTheme = useViewStore(state => state.setSimpleMapTheme);
   const [sandboxStartSelection, setSandboxStartSelection] = useState(false);
-  const [sandboxStartPosition, setSandboxStartPosition] = useState(null);
+  const sandboxStartPosition = useSandboxSpawnDraftStore(state => state.startPosition);
+  const setSandboxStartPosition = useSandboxSpawnDraftStore(state => state.setStartPosition);
   const [sandboxAimSelection, setSandboxAimSelection] = useState(false);
-  const [sandboxAimPosition, setSandboxAimPosition] = useState(null);
+  const sandboxAimPosition = useSandboxSpawnDraftStore(state => state.aimPosition);
+  const setSandboxAimPosition = useSandboxSpawnDraftStore(state => state.setAimPosition);
   const [selectedBallisticTargetId, setSelectedBallisticTargetId] = useState(null);
   const [mapZoom, setMapZoom] = useState(5.15);
   const [mapMinZoom, setMapMinZoom] = useState(COMMAND_MAP_MIN_ZOOM);
   const [mapDebug, setMapDebug] = useState(null);
   const [selectedMapAsset, setSelectedMapAsset] = useState(null);
   const [selectedProtectedObjectId, setSelectedProtectedObjectId] = useState(null);
+  const [fpvWaypointEntityId, setFpvWaypointEntityId] = useState(null);
   const protectedObjects = useProtectedObjectStore(state => state.objects);
   const [performanceSnapshot, setPerformanceSnapshot] = useState(null);
   const [interceptVisuals, setInterceptVisuals] = useState([]);
@@ -522,6 +530,13 @@ function SimpleModeSceneContent({ sandboxMode = false, developerMode = false, re
       return;
     }
     setSelectedProtectedObjectId(null);
+    if (fpvWaypointEntityId && !deployPhase) {
+      setControllableNavigationWaypoint(fpvWaypointEntityId, {
+        lat: event.lngLat.lat, lng: event.lngLat.lng,
+      });
+      setFpvWaypointEntityId(null);
+      return;
+    }
     if (toolsMode && sandboxAimSelection && !deployPhase) {
       setSandboxAimPosition({ lat: event.lngLat.lat, lng: event.lngLat.lng });
       setSandboxAimSelection(false);
@@ -537,6 +552,15 @@ function SimpleModeSceneContent({ sandboxMode = false, developerMode = false, re
       setSelectedBallisticTargetId(null);
     }
     handleMapClick(event.lngLat.lat, event.lngLat.lng);
+  };
+
+  const openCommandFpv = entity => {
+    if (entity?.status !== 'ACTIVE') return;
+    if (entity.controlMode === CONTROLLABLE_CONTROL_MODE.MANUAL
+      && !setControlledControllableEntity(entity.id)) return;
+    if (timeScale !== 1) setTimeScale(1);
+    setControllableCameraMode(entity.id, CONTROLLABLE_CAMERA_MODE.FPV);
+    openFpvFeed(sandboxMode ? 'SANDBOX' : 'SIMPLE', entity.id);
   };
 
   return (
@@ -589,7 +613,7 @@ function SimpleModeSceneContent({ sandboxMode = false, developerMode = false, re
             latitude: event.viewState.latitude, zoom: event.viewState.zoom });
           if (developerMode) setMapDebug(getMapDebugState(event.target, event.viewState));
         }}
-        cursor={deployPhase || sandboxStartSelection ? 'crosshair' : 'default'}
+        cursor={deployPhase || sandboxStartSelection || fpvWaypointEntityId ? 'crosshair' : 'default'}
       >
         {developerMode && <MapAlignmentDebugLayer />}
         {protectedObjectsVisible && <CommandProtectedObjectLayer
@@ -737,7 +761,7 @@ function SimpleModeSceneContent({ sandboxMode = false, developerMode = false, re
                   </span>
                 )}</span>
                 <TargetHoverData speedKmh={track.reportedSpeedKmh} distanceKm={targetDistanceKm} ru={ru} />
-                <CommandTrackLabel track={track} distanceKm={trackRangeKm} target={target} />
+                <CommandTrackLabel track={track} distanceKm={trackRangeKm} target={target} language={language} />
               </button>
             </InterpolatedMapMarker>
           );
@@ -752,19 +776,6 @@ function SimpleModeSceneContent({ sandboxMode = false, developerMode = false, re
               onClick={event => {
                 event.stopPropagation();
                 setSelectedControllableEntity(entity.id);
-                if (!setControlledControllableEntity(entity.id)) return;
-                if (selectedTrackId) setControllableSelectedTrack(entity.id, selectedTrackId);
-                if (timeScale !== 1) setTimeScale(1);
-                setControllableCameraMode(entity.id, CONTROLLABLE_CAMERA_MODE.FPV);
-                mapRef.current?.flyTo?.({
-                  center: [entity.position.lng, entity.position.lat],
-                  zoom: Math.max(mapZoom, 8.5),
-                  duration: 900,
-                  essential: true,
-                });
-                window.setTimeout(() => {
-                  openFpvFeed(sandboxMode ? 'SANDBOX' : 'SIMPLE', entity.id);
-                }, 920);
               }}>
               <span>◇</span><small>{entity.id}</small>
             </button>
@@ -856,15 +867,39 @@ function SimpleModeSceneContent({ sandboxMode = false, developerMode = false, re
 
         {sandboxStartPosition && (
           <Marker longitude={sandboxStartPosition.lng} latitude={sandboxStartPosition.lat} anchor="center">
-            <div className="sandbox-start-marker"><span>+</span><small>LAUNCH POINT</small></div>
+            <div className="sandbox-start-marker"><span>+</span><small>{localizeTechnicalTerm('LAUNCH POINT', language)}</small></div>
           </Marker>
         )}
         {sandboxAimPosition && (
           <Marker longitude={sandboxAimPosition.lng} latitude={sandboxAimPosition.lat} anchor="center">
-            <div className="sandbox-start-marker sandbox-aim-marker"><span>×</span><small>AIM POINT</small></div>
+            <div className="sandbox-start-marker sandbox-aim-marker"><span>×</span><small>{localizeTechnicalTerm('AIM POINT', language)}</small></div>
           </Marker>
         )}
       </Map>
+      {selectedControllableEntityId && (() => {
+        const entity = controllables.find(candidate => candidate.id === selectedControllableEntityId);
+        if (!entity) return null;
+        return <aside className="fpv-command-card">
+          <header><strong>{entity.id}</strong><span>{localizeTechnicalTerm(entity.controlMode, language)}</span></header>
+          <small>{localizeTechnicalTerm('LINK', language)} {Math.round(entity.linkQuality * 100)}% · {localizeTechnicalTerm('BATTERY', language)} {Math.round(entity.batteryRemaining * 100)}%</small>
+          <small>{localizeTechnicalTerm(entity.navigation?.status ?? 'READY', language)}</small>
+          <div>
+            <button className={entity.controlMode === CONTROLLABLE_CONTROL_MODE.MANUAL ? 'is-active' : ''}
+              onClick={() => { setControllableControlMode(entity.id, CONTROLLABLE_CONTROL_MODE.MANUAL);
+                setControlledControllableEntity(entity.id); }}>{localizeTechnicalTerm('MANUAL', language)}</button>
+            <button className={entity.controlMode === CONTROLLABLE_CONTROL_MODE.HOLD ? 'is-active' : ''}
+              onClick={() => { releaseControllableControl();
+                setControllableControlMode(entity.id, CONTROLLABLE_CONTROL_MODE.HOLD); }}>{localizeTechnicalTerm('HOLD', language)}</button>
+            <button disabled={!entity.selectedTrackId}
+              onClick={() => setControllableNavigationTrack(entity.id, entity.selectedTrackId)}>{localizeTechnicalTerm('AUTO TRACK', language)}</button>
+          </div>
+          <div>
+            <button className={fpvWaypointEntityId === entity.id ? 'is-active' : ''}
+              onClick={() => setFpvWaypointEntityId(entity.id)}>{localizeTechnicalTerm('SET WAYPOINT', language)}</button>
+            <button onClick={() => openCommandFpv(entity)}>{localizeTechnicalTerm('OPEN FPV', language)}</button>
+          </div>
+        </aside>;
+      })()}
       {developerMode && mapDebug && (
         <output className="map-transform-debug">
           MAP ALIGN DEBUG · ZOOM {mapDebug.zoom.toFixed(2)} · PAN {mapDebug.longitude.toFixed(3)} / {mapDebug.latitude.toFixed(3)}<br />
@@ -893,9 +928,6 @@ function SimpleModeSceneContent({ sandboxMode = false, developerMode = false, re
 
       <div className="simple-scene__topbar" data-design-id="game-topbar" data-design-name="Верхняя панель" data-design-dynamic-text="true" style={topbarDesign}>
         <button onClick={returnToMenu}>← {ru ? 'Меню' : 'Menu'}</button>
-        <button onClick={() => openAdvancedPreview(sandboxMode ? 'SANDBOX' : 'SIMPLE')}>
-          {ru ? '3D РЕЖИМ' : '3D MODE'}
-        </button>
         <span>{developerMode ? (ru ? 'Режим разработчика' : 'Developer Mode') : sandboxMode ? (ru ? 'Полигон' : 'Sandbox') : (ru ? 'Командный режим' : 'Simple Mode')} · {targets.length} {ru ? 'целей' : 'airborne'}</span>
         {[SIMPLE_MAP_THEME.DARK, SIMPLE_MAP_THEME.SATELLITE, SIMPLE_MAP_THEME.LIGHT].map(theme => (
           <button key={theme} className={`map-theme-toggle ${mapTheme === theme ? 'is-active' : ''}`} onClick={() => setMapTheme(theme)}>{ru ? ({ DARK: 'ТЁМНАЯ', SATELLITE: 'СПУТНИК', LIGHT: 'КОМАНДНАЯ' }[theme]) : (theme === SIMPLE_MAP_THEME.LIGHT ? 'COMMAND' : theme)}</button>
@@ -1433,7 +1465,7 @@ function BatteryMarkers({
   const radarAssetId = `${battery.id}:RADAR`;
   return (
     <>
-      {radar && !isGun && (
+      {radar && !isGun && battery.category !== 'TOR_M1' && (
         <Marker longitude={(radar.worldPosition ?? radar).lng} latitude={(radar.worldPosition ?? radar).lat} anchor="center">
           <div className={`light-defense-object light-defense-object--radar ${selectedMapAsset?.id === radarAssetId ? 'is-selected' : ''} ${isDraft ? 'is-draft' : ''}`}>
             <button onClick={(event) => { event.stopPropagation(); onSelect({ id: radarAssetId, type: 'RADAR', componentId: null }); }}>
@@ -1504,7 +1536,7 @@ function TargetMarker({ target, track, trackDistanceKm, onSelectTrack, onSelectT
         <LightMapSprite assetId={getTargetAssetId(target)} sourceUrl={target.customAssetUrl} sourceOffsetX={target.customAssetOffsetX} sourceOffsetY={target.customAssetOffsetY} heading={target.heading} sizePx={getMapObjectSizePx(MAP_OBJECT_CLASS.TARGET, mapZoom) * (target.customAssetScale ?? 1)} />
         {target.type === SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE && <small>{target.flightPhase}</small>}
         <TargetHoverData speedKmh={target.speedKmh} distanceKm={targetDistanceKm} ru={ru} />
-        {track && <CommandTrackLabel track={track} distanceKm={trackDistanceKm} target={target} />}
+        {track && <CommandTrackLabel track={track} distanceKm={trackDistanceKm} target={target} language={language} />}
       </button>
     </InterpolatedMapMarker>
   );
@@ -1646,7 +1678,7 @@ const BallisticDebugPanel = memo(function BallisticDebugPanel({ targetId, langua
   );
 });
 
-function SandboxPanel({
+export function SandboxPanel({
   startPosition,
   aimPosition,
   selectingStart,
@@ -1655,20 +1687,27 @@ function SandboxPanel({
   onSelectAim,
   onSpawn,
   language,
+  initiallyCollapsed = false,
+  onFpvSpawn,
 }) {
   const ru = language === UI_LANGUAGE.RU;
-  const [collapsed, setCollapsed] = useState(false);
-  const [type, setType] = useState(SIMPLE_TARGET_TYPE.UAV);
-  const [modelId, setModelId] = useState(LIGHT_TARGET_MODEL.GERAN_2);
-  const [count, setCount] = useState(5);
-  const [speedKmh, setSpeedKmh] = useState(250);
-  const [altitudeM, setAltitudeM] = useState(250);
-  const [objectiveId, setObjectiveId] = useState(THEATER_OBJECTS[0].id);
+  const [collapsed, setCollapsed] = useState(initiallyCollapsed);
+  const draft = useSandboxSpawnDraftStore(state => state.draft);
+  const setDraft = useSandboxSpawnDraftStore(state => state.setDraft);
+  const { type, modelId, count, speedKmh, altitudeM, objectiveId,
+    terminalCorrectionAngleDeg, terminalCorrectionCount, terminalCorrectionSide,
+    ballisticManeuverMode } = draft;
+  const setType = value => setDraft({ type: value });
+  const setModelId = value => setDraft({ modelId: value });
+  const setCount = value => setDraft({ count: value });
+  const setSpeedKmh = value => setDraft({ speedKmh: value });
+  const setAltitudeM = value => setDraft({ altitudeM: value });
+  const setObjectiveId = value => setDraft({ objectiveId: value });
+  const setTerminalCorrectionAngleDeg = value => setDraft({ terminalCorrectionAngleDeg: value });
+  const setTerminalCorrectionCount = value => setDraft({ terminalCorrectionCount: value });
+  const setTerminalCorrectionSide = value => setDraft({ terminalCorrectionSide: value });
+  const setBallisticManeuverMode = value => setDraft({ ballisticManeuverMode: value });
   const [feedback, setFeedback] = useState('');
-  const [terminalCorrectionAngleDeg, setTerminalCorrectionAngleDeg] = useState(0);
-  const [terminalCorrectionCount, setTerminalCorrectionCount] = useState(0);
-  const [terminalCorrectionSide, setTerminalCorrectionSide] = useState('AUTO');
-  const [ballisticManeuverMode, setBallisticManeuverMode] = useState(BALLISTIC_MANEUVER_MODE.AUTO);
   const designStyle = useDesignSurface('game-spawn-tools');
 
   const changeModel = (nextModelId) => {
@@ -1787,7 +1826,7 @@ function SandboxPanel({
       )}
       {type !== SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE && <><label htmlFor="sandbox-objective">{ru ? 'Цель удара' : 'Estimated target'}</label>
         <select id="sandbox-objective" value={objectiveId} onChange={event => setObjectiveId(event.target.value)}>
-          {THEATER_OBJECTS.map(objective => <option key={objective.id} value={objective.id}>{localizeObjective(objective.name, language)} · {objective.category}</option>)}
+          {THEATER_OBJECTS.map(objective => <option key={objective.id} value={objective.id}>{localizeObjective(objective.name, language)} · {localizeTechnicalTerm(objective.category, language)}</option>)}
         </select></>}
       <button className={`sandbox-panel__map-select ${selectingStart ? 'is-active' : ''}`} onClick={onSelectStart}>
         {selectingStart ? (ru ? 'Укажите точку пуска…' : 'Click launch point on map…') : startPosition ? `${startPosition.lat.toFixed(2)}, ${startPosition.lng.toFixed(2)}` : (ru ? 'Выбрать точку пуска' : 'Select start on map')}
@@ -1796,6 +1835,15 @@ function SandboxPanel({
         {selectingAim ? (ru ? 'Укажите точку попадания…' : 'Click aim point on map…') : aimPosition ? `${aimPosition.lat.toFixed(2)}, ${aimPosition.lng.toFixed(2)}` : (ru ? 'Выбрать точку попадания' : 'Select aim point')}
       </button>}
       <button className="sandbox-panel__spawn" disabled={!startPosition || (type === SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE && !aimPosition)} onClick={spawn}>{ru ? 'Добавить' : 'Spawn'} {count}</button>
+      <button className="sandbox-panel__map-select" disabled={!startPosition} onClick={() => {
+        const id = useEngine.getState().launchControllableEntity({
+          profileId: CONTROLLABLE_AIR_PROFILE_IDS.SKYFALL_FPV,
+          initialPosition: { ...startPosition, altitudeM: 2 },
+          initialOrientation: { heading: 0, pitch: 90, roll: 0 },
+          selectedTrackId: useEngine.getState().selectedTrackId,
+        });
+        if (id) { useEngine.getState().setSelectedControllableEntity(id); onFpvSpawn?.(id); }
+      }}>{ru ? 'СОЗДАТЬ FPV · SKYFALL' : 'SPAWN FPV · SKYFALL'}</button>
       {feedback && <div className="sandbox-panel__feedback">{feedback}</div>}
     </section>
   );

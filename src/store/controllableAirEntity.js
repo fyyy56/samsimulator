@@ -9,8 +9,10 @@ export const CONTROLLABLE_AIR_ENTITY_TYPE = 'CONTROLLABLE_AIR_ENTITY';
 
 export const CONTROLLABLE_CONTROL_MODE = Object.freeze({
   MANUAL: 'MANUAL',
-  ASSISTED: 'ASSISTED',
-  AUTONOMOUS: 'AUTONOMOUS',
+  HOLD: 'HOLD',
+  AUTO_NAV: 'AUTO_NAV',
+  ASSISTED: 'HOLD',
+  AUTONOMOUS: 'AUTO_NAV',
 });
 
 export const CONTROLLABLE_CAMERA_MODE = Object.freeze({
@@ -465,6 +467,7 @@ export function createControllableAirEntity({
     roll,
     orientationQuaternion: createOrientationQuaternion(heading, pitch, roll),
     controlMode: CONTROLLABLE_CONTROL_MODE.MANUAL,
+    navigation: null,
     cameraMode: CONTROLLABLE_CAMERA_MODE.THIRD_PERSON,
     launchSourceId: sourceId,
     batteryRemaining: 1,

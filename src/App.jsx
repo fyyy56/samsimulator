@@ -1,7 +1,7 @@
 import { lazy, Suspense } from 'react';
 import MainMenu from './scenes/MainMenu.jsx';
 import MenuShell from './ui/MenuShell.jsx';
-import { GAME_SCENE, UI_LANGUAGE, useGameStore } from './store/gameStore.js';
+import { GAME_SCENE, UI_LANGUAGE, isAdvancedScene, is2DScene, useGameStore } from './store/gameStore.js';
 
 const GameViewport = lazy(() => import('./scenes/GameViewport.jsx'));
 const ScenarioLibraryScene = lazy(() => import('./scenes/ScenarioLibraryScene.jsx'));
@@ -16,7 +16,7 @@ export default function App() {
   const scene = useGameStore(state => state.scene);
   const ru = useGameStore(state => state.language) === UI_LANGUAGE.RU;
 
-  if ([GAME_SCENE.SIMPLE, GAME_SCENE.SANDBOX, GAME_SCENE.ADVANCED_PLACEHOLDER].includes(scene)) {
+  if (is2DScene(scene) || isAdvancedScene(scene)) {
     return (
       <Suspense fallback={<div className="scene-loading">{ru ? 'ЗАГРУЗКА ОПЕРАТИВНОЙ КАРТЫ' : 'INITIALIZING OPERATIONAL MAP'}</div>}>
         <GameViewport />

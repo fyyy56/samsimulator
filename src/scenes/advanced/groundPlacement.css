@@ -1,0 +1,15 @@
+.ground-placement { position:absolute; z-index:26; top:120px; right:20px; width:210px; font:11px system-ui,sans-serif; }
+.ground-placement button,.ground-placement__card button { color:#d6e3e2; background:#132831ed; border:1px solid #93c8bc40; border-radius:5px; padding:9px 12px; cursor:pointer; }
+.ground-placement > button { width:100%; letter-spacing:.08em; }
+.ground-placement__panel,.ground-placement__hint,.ground-placement__card { margin-top:6px; padding:10px; border:1px solid #93c8bc40; border-radius:8px; background:#08151bef; backdrop-filter:blur(12px); color:#d6e3e2; }
+.ground-placement__panel { display:grid; gap:5px; max-height:45vh; overflow:auto; }
+.ground-placement__panel nav { display:flex; gap:5px; }
+.ground-placement__panel nav button { flex:1; }
+.ground-placement button:hover,.ground-placement .is-active { border-color:#84e8c2; }
+.ground-placement__hint { line-height:1.7; }
+.ground-placement__card { position:absolute; z-index:26; right:20px; bottom:76px; width:220px; display:grid; gap:8px; font:12px system-ui,sans-serif; }
+.ground-placement__card small { opacity:.6; }
+.ground-placement__card dl { display:grid; grid-template-columns:1fr 1fr; gap:5px 10px; margin:2px 0; }
+.ground-placement__card dl div { min-width:0; }
+.ground-placement__card dt { color:#83aaa4; font:8px/1.2 ui-monospace,monospace; letter-spacing:.08em; }
+.ground-placement__card dd { margin:2px 0 0; overflow:hidden; color:#e3f0eb; font:10px/1.2 ui-monospace,monospace; text-overflow:ellipsis; }

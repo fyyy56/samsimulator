@@ -12,8 +12,8 @@ export function setupVisualScenario(mode = 'STRAIGHT', model = 'GERAN_2', count 
   const sequence = ++scenarioSequence;
   store.getState().resetScenario('SANDBOX');
   store.getState().configureSimulationProfile({ physicsLevel: 'BASIC', uiDetail: 'OPERATIONAL' });
-  if (['ENGAGEMENT', 'ENGAGEMENT_NASAMS', 'INTERCEPTOR', 'MIXED'].includes(mode)) {
-    store.getState().startDeploy(mode === 'ENGAGEMENT_NASAMS' ? 'MEDIUM' : 'LONG');
+  if (['ENGAGEMENT', 'ENGAGEMENT_NASAMS', 'ENGAGEMENT_ASTER', 'INTERCEPTOR', 'MIXED'].includes(mode)) {
+    store.getState().startDeploy(mode === 'ENGAGEMENT_NASAMS' ? 'MEDIUM' : mode === 'ENGAGEMENT_ASTER' ? 'SAMP_T' : 'LONG');
     store.getState().handleMapClick(50, 30);
     store.getState().rotateRadar(90);
     store.getState().confirmRadarHeading();
@@ -40,7 +40,7 @@ export function setupVisualScenario(mode = 'STRAIGHT', model = 'GERAN_2', count 
     ...(ballistic ? { ballisticPhysics: { enabled: true, aimPoint: destination,
       terminalCorrection: { angleDeg: 0, count: 0, side: 'RIGHT', seed: 42 } } } : {}),
   }, store.getState().simulationTime));
-  const tracks = ['ENGAGEMENT', 'ENGAGEMENT_NASAMS', 'INTERCEPTOR', 'MIXED'].includes(mode) ? targets.map(target => ({
+  const tracks = ['ENGAGEMENT', 'ENGAGEMENT_NASAMS', 'ENGAGEMENT_ASTER', 'INTERCEPTOR', 'MIXED'].includes(mode) ? targets.map(target => ({
     id: `TRK-${target.id}`, targetId: target.id, state: 'IDENTIFIED',
     reportedPosition: { ...target.position, alt: target.altitudeM },
     reportedHeading: target.heading, reportedSpeedKmh: target.speedKmh,

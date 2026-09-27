@@ -23,7 +23,7 @@ useOlsViewStore.getState().release();
 assert.equal(useGameStore.getState().presentationMode, 'OLS_FEED');
 assert.equal(useEngine.getState(), before, 'Camera actions must not alter simulation or Tracks');
 useGameStore.getState().returnToCommand();
-assert.equal(useGameStore.getState().scene, 'SANDBOX');
+assert.equal(useGameStore.getState().scene, 'SANDBOX_2D');
 assert.deepEqual(useGameStore.getState().commandViewState, view);
 assert.equal(useGameStore.getState().resumeCommandSimulation, true);
 console.log('OLS: wheel/trackpad equivalence, zoom bounds, simulation isolation and COMMAND restoration passed.');

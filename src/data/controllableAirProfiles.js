@@ -119,6 +119,14 @@ export const CONTROLLABLE_AIR_PROFILES = Object.freeze({
     }),
     batteryDrainPerSec: 1 / 420,
     collisionRadiusM: 1.35,
+    warhead: Object.freeze({
+      id: 'FPV_FRAG_V1',
+      // GAMEPLAY BALANCE VALUES. They are not derived from reference footage.
+      proximityRadiusM: 2,
+      falloffExponent: 1.35,
+      damageThreshold: 0.22,
+      destroyThreshold: 0.62,
+    }),
     physicalDimensionsM: { length: 1.9, width: 1.75, height: 0.45 },
     launch: Object.freeze({
       enabled: true,

@@ -26,8 +26,19 @@ export const createOrientation = (position, kinematics, presentation, visualQuat
 // Readable during Cesium's clock/data-source phase, before scene.preRender.
 // readVisual is shared with the camera, not a second interpolation path.
 export const createVisualPoseProperties = (readVisual, presentation) => ({
-  position: new CallbackPositionProperty((_time, result) => Cartesian3.clone(
-    readVisual().worldPosition, result), false),
+  position: new CallbackPositionProperty((_time, result) => {
+    const visual = readVisual();
+    const center = presentation.modelCenterOffsetMeters;
+    if (!center || (!center.x && !center.y && !center.z)) {
+      return Cartesian3.clone(visual.worldPosition, result);
+    }
+    const scale = presentation.baseVisualScale ?? 1;
+    const rotation = Matrix3.fromQuaternion(createOrientation(visual.worldPosition,
+      visual.kinematics, presentation, visual.quaternion), new Matrix3());
+    const offset = Matrix3.multiplyByVector(rotation,
+      new Cartesian3(center.x * scale, center.y * scale, center.z * scale), new Cartesian3());
+    return Cartesian3.subtract(visual.worldPosition, offset, result ?? new Cartesian3());
+  }, false),
   orientation: new CallbackProperty((_time, result) => {
     const visual = readVisual();
     return Quaternion.clone(createOrientation(visual.worldPosition,
@@ -39,10 +50,12 @@ export const createVisualPoseProperties = (readVisual, presentation) => ({
 // Apply the same model correction as the mesh, never raw simulation heading.
 export const getVisualModelAnchorPosition = (visual, presentation, anchor) => {
   const scale = presentation.baseVisualScale ?? 1;
+  const center = presentation.modelCenterOffsetMeters ?? { x: 0, y: 0, z: 0 };
   const rotation = Matrix3.fromQuaternion(createOrientation(visual.worldPosition,
     visual.kinematics, presentation, visual.quaternion), new Matrix3());
   const offset = Matrix3.multiplyByVector(rotation,
-    new Cartesian3(anchor.x * scale, anchor.y * scale, anchor.z * scale), new Cartesian3());
+    new Cartesian3((anchor.x - center.x) * scale, (anchor.y - center.y) * scale,
+      (anchor.z - center.z) * scale), new Cartesian3());
   return Cartesian3.add(visual.worldPosition, offset, new Cartesian3());
 };
 

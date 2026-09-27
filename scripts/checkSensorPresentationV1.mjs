@@ -13,15 +13,26 @@ for (const profile of ['RADAR_P18', 'RADAR_35D6', 'RADAR_79K6']) {
   const start = useEngine.getState().simulationTime;
   let first = null;
   let lost = 0;
+  let detectedMaxOffsetM = 0;
   for (let step = 0; step < 2400; step++) {
     useEngine.getState().tick();
     const state = useEngine.getState();
     assert.equal(state.batteries.length, 0, 'No SAM radar is needed for presentation');
     const track = state.tracks[0];
+    if (track?.state === 'DETECTED') {
+      const target = state.airTargets.find(item => item.id === track.targetId);
+      detectedMaxOffsetM = Math.max(detectedMaxOffsetM, getDistanceKm(
+        target.position.lat, target.position.lng,
+        track.reportedPosition.lat, track.reportedPosition.lng) * 1000);
+      assert.equal(track.reportedSpeedKmh, null,
+        'Tentative motion must remain internal until Track is established');
+    }
     if (isAvailableNetworkTrack(track)) first ??= state.simulationTime - start;
     else if (first != null) lost++;
   }
   assert.ok(first != null, `${profile} must build a Geran estimate from real beam passes`);
+  assert.ok(detectedMaxOffsetM < 180,
+    `${profile} tentative plot must coast with measured motion instead of lagging far behind: ${detectedMaxOffsetM.toFixed(0)} m`);
   assert.equal(lost, 0, `${profile} must retain estimates between normal passes`);
   const state = useEngine.getState();
   const before = state.tracks[0];
@@ -30,7 +41,8 @@ for (const profile of ['RADAR_P18', 'RADAR_35D6', 'RADAR_79K6']) {
   useEngine.setState({ searchRadars: state.searchRadars.map(r => ({ ...r, operational: false })) });
   for (let step = 0; step < 700; step++) useEngine.getState().tick();
   assert.equal(useEngine.getState().tracks.length, 0, 'No immortal tracks after source shutdown');
-  results.push({ profile, firstTrackSec: +first.toFixed(2), lostBetweenPasses: lost });
+  results.push({ profile, firstTrackSec: +first.toFixed(2), lostBetweenPasses: lost,
+    detectedMaxOffsetM: +detectedMaxOffsetM.toFixed(1) });
 }
 
 const sample = { id: 'T-TEST', state: 'TRACKED', reportedPosition: { lat: 50, lng: 30 },

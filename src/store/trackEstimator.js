@@ -95,10 +95,11 @@ const combineUncertainty = (prior, measurement, floor) => {
 };
 
 const initialEstimate = (measurement, hasTrackSolution) => {
-  const velocity = hasTrackSolution
-    ? velocityFromHeading(measurement.speedKmh, measurement.headingDeg,
-      measurement.verticalSpeedMps)
-    : { eastMps: 0, northMps: 0, upMps: 0 };
+  // A tentative detection still has a measured motion cue. Keep it internal
+  // for coasting between scans; public speed/heading remain unavailable until
+  // the sensor has established a Track solution.
+  const velocity = velocityFromHeading(measurement.speedKmh, measurement.headingDeg,
+    measurement.verticalSpeedMps);
   return {
     reportedPosition: positionWithAltitude(measurement.position, measurement.altitudeM),
     reportedAltitudeM: measurement.altitudeM,
@@ -125,9 +126,13 @@ const initialEstimate = (measurement, hasTrackSolution) => {
 export function propagateTrackEstimate(track, deltaTimeSec) {
   const durationSec = Math.max(0, deltaTimeSec);
   if (durationSec <= 0 || !track?.reportedPosition) return {};
-  const priorHeading = finite(track.reportedHeading);
-  const priorSpeedMps = Math.max(0,
-    finite(track.reportedHorizontalSpeedKmh, track.reportedSpeedKmh) / 3.6);
+  const tentative = track.state === 'DETECTED';
+  const priorHeading = tentative
+    ? headingFromVelocity(track.estimatedVelocityEnuMps ?? {}, 0)
+    : finite(track.reportedHeading);
+  const priorSpeedMps = tentative
+    ? magnitude2d(track.estimatedVelocityEnuMps ?? {})
+    : Math.max(0, finite(track.reportedHorizontalSpeedKmh, track.reportedSpeedKmh) / 3.6);
   const retainedAcceleration = finite(track.estimatedLongitudinalAccelerationMps2)
     * Math.exp(-durationSec / TRACK_ESTIMATOR_CONFIG.accelerationMemorySec);
   const retainedTurnRate = clamp(finite(track.estimatedTurnRateDegPerSec),
@@ -151,10 +156,10 @@ export function propagateTrackEstimate(track, deltaTimeSec) {
   return {
     reportedPosition: positionWithAltitude(position, altitudeM),
     reportedAltitudeM: altitudeM,
-    reportedHeading: nextHeading,
-    reportedSpeedKmh: nextSpeedMps * 3.6,
-    reportedHorizontalSpeedKmh: nextSpeedMps * 3.6,
-    reportedVerticalSpeedMps: nextVerticalSpeed,
+    reportedHeading: tentative ? null : nextHeading,
+    reportedSpeedKmh: tentative ? null : nextSpeedMps * 3.6,
+    reportedHorizontalSpeedKmh: tentative ? null : nextSpeedMps * 3.6,
+    reportedVerticalSpeedMps: tentative ? track.reportedVerticalSpeedMps : nextVerticalSpeed,
     estimatedVelocityEnuMps: velocityFromHeading(nextSpeedMps * 3.6, nextHeading,
       nextVerticalSpeed),
     estimatedTurnRateDegPerSec: retainedTurnRate,
@@ -218,7 +223,7 @@ export function updateTrackEstimate({ existingTrack, predictedTrack, measurement
     measurement.headingDeg, measurement.verticalSpeedMps);
   let directVelocityGain = hasTrackSolution
     ? 0.04 + quality * 0.22 * measurementDeltaSec / (measurementDeltaSec + 1.25)
-    : 0;
+    : 0.03 + quality * 0.1 * measurementDeltaSec / (measurementDeltaSec + 1.25);
   if (!hadVelocitySolution && hasTrackSolution) directVelocityGain = 1;
   if (idealMeasurement) directVelocityGain = 1;
   const innovationVelocityGain = sourceChanged || !hasTrackSolution || idealMeasurement

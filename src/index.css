@@ -1681,6 +1681,9 @@ body:has(.menu-shell .cinematic-background.is-restore) .design-inspector { opaci
 .menu-shell .mode-card::after { display: none; }
 .menu-shell .mode-card:hover { transform: translateY(-2px); background: rgba(15,27,32,.66); border-color: #fff !important; box-shadow: 0 12px 36px rgba(0,0,0,.24), inset 0 0 0 1px rgba(112,199,215,.14); }
 .menu-shell .mode-card__content strong { font-size: 11px; font-weight: 570; letter-spacing: .08em; text-transform: uppercase; }
+.menu-shell .mode-selector__group { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }
+.menu-shell .mode-selector__group > span { grid-column: 1 / -1; margin: 6px 2px 0; color: rgba(172,205,210,.55); font: 600 7px/1 var(--mono-font); letter-spacing: .18em; }
+.menu-shell .mode-selector__group .mode-card { min-width: 0; }
 .menu-shell .mode-card--settings { margin-top: 0; }
 .menu-shell:has(.cinematic-background.is-menu) .mode-card { animation: menuItemCascade .48s cubic-bezier(.16,.78,.28,1) both; }
 .menu-shell:has(.cinematic-background.is-menu) .mode-card:nth-child(1) { animation-delay: .02s; }
@@ -2256,3 +2259,15 @@ body:has(.menu-shell .cinematic-background.is-restore) .design-inspector { opaci
   color: rgba(155, 219, 205, .72); background: rgba(4, 12, 15, .7);
   border: 1px solid rgba(114, 200, 203, .22); border-radius: 3px;
   pointer-events: none; font: 600 8px/1 var(--mono-font); letter-spacing: .04em; }
+
+.fpv-command-card { position: fixed; z-index: 36; left: 22px; bottom: 92px; width: 250px;
+  display: grid; gap: 7px; padding: 12px; color: #e8f4ef; background: rgba(8,24,27,.91);
+  border: 1px solid rgba(118,192,171,.48); border-radius: 10px; backdrop-filter: blur(12px);
+  font: 10px/1.25 var(--font-mono, monospace); }
+.fpv-command-card header, .fpv-command-card div { display: flex; gap: 6px; align-items: center; }
+.fpv-command-card header { justify-content: space-between; color: #95e2c8; }
+.fpv-command-card button { flex: 1; min-height: 28px; padding: 4px 6px; color: #dcebe6;
+  border: 1px solid rgba(123,176,165,.42); border-radius: 5px; background: rgba(20,48,49,.72);
+  font: 700 8px/1 var(--font-mono, monospace); }
+.fpv-command-card button.is-active { color: #12201d; border-color: #8de1c4; background: #8de1c4; }
+.fpv-command-card button:disabled { opacity: .35; }

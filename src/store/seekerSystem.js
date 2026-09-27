@@ -50,7 +50,11 @@ const getTargetAspect = (missilePosition, target) => {
 };
 
 const getSearchLookPosition = (seeker, missile, networkTrack) => (
-  networkTrack?.reportedPosition
+  // Once acquired, the seeker tracks its own estimate. A less frequent radar
+  // update must not drag its boresight away and cause a false terminal loss.
+  ([SEEKER_STATE.ACQUIRED, SEEKER_STATE.TERMINAL].includes(seeker?.state)
+    ? seeker?.targetEstimate?.position : null)
+  ?? networkTrack?.reportedPosition
   ?? seeker?.targetEstimate?.position
   ?? missile?.guidance?.commandPosition
   ?? null

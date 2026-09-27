@@ -85,6 +85,9 @@ export function createAdvancedCameraController(viewer) {
     orbitZoomScale: 1,
     smoothedDistanceM: null,
     smoothedAnchor: null,
+    previousAnchor: null,
+    smoothOrbitYawDeg: 180,
+    smoothOrbitPitchDeg: 18,
     smoothedDirection: { east: 0, north: 1 },
     lastHeadingDeg: null,
     smoothHeadingDeg: null,
@@ -123,8 +126,7 @@ export function createAdvancedCameraController(viewer) {
       state.orbitPitchDeg = 18;
     }
     state.orbitZoomScale = 1;
-    state.smoothedDistanceM = null;
-    state.smoothedAnchor = null;
+    state.previousAnchor = null;
     state.lastHeadingDeg = null;
     state.smoothHeadingDeg = null;
     state.smoothedOnboardPosition = null;
@@ -133,7 +135,14 @@ export function createAdvancedCameraController(viewer) {
     state.smoothedOnboardQuaternion = null;
   };
 
+  let fpvTransition = null;
+  const beginFpvTransition = (durationSec = 1.5) => {
+    fpvTransition = { started: performance.now(), duration: durationSec * 1000,
+      position: Cartesian3.clone(viewer.camera.positionWC),
+      direction: Cartesian3.clone(viewer.camera.directionWC), up: Cartesian3.clone(viewer.camera.upWC) };
+  };
   const setMode = (mode, resetView = true) => {
+    if (mode !== ADVANCED_CAMERA_MODE.FPV) fpvTransition = null;
     state.mode = mode;
     screenController.enableInputs = mode === ADVANCED_CAMERA_MODE.FREE;
     if (mode === ADVANCED_CAMERA_MODE.FREE && Number.isFinite(defaultFov)
@@ -183,9 +192,9 @@ export function createAdvancedCameraController(viewer) {
       || [ADVANCED_CAMERA_MODE.THIRD_PERSON, ADVANCED_CAMERA_MODE.FIRST_PERSON,
         ADVANCED_CAMERA_MODE.FPV].includes(state.mode)) return;
     state.orbitZoomScale = clamp(
-      state.orbitZoomScale * Math.exp(event.deltaY * 0.00135),
+      state.orbitZoomScale * Math.exp(clamp(event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 600 : 1), -240, 240) * 0.0018),
       0.08,
-      10,
+      50,
     );
     event.preventDefault();
     event.stopPropagation();
@@ -197,7 +206,7 @@ export function createAdvancedCameraController(viewer) {
   canvas.addEventListener('pointercancel', pointerUp);
   canvas.addEventListener('wheel', wheel, { passive: false });
 
-  const update = ({ selectedPosition, targetPosition = null, headingDeg = 0, pitchDeg = 0,
+  const update = ({ selectedPosition, targetPosition = null, contactPosition = null, headingDeg = 0, pitchDeg = 0,
     rollDeg = 0, selectedAltitudeM = 0, firstPersonOffsetM = 0.65,
     cameraConfig = null, bodyQuaternion = null,
     timestampMs = performance.now() }) => {
@@ -241,36 +250,70 @@ export function createAdvancedCameraController(viewer) {
           dampingAlpha(deltaSec, rotationTimeConstantSec), state.smoothedOnboardQuaternion)
         : Quaternion.clone(desiredQuaternion);
       const cameraMatrix = Matrix3.fromQuaternion(state.smoothedOnboardQuaternion, new Matrix3());
+      let destination = desiredCameraPosition;
+      let direction = Matrix3.getColumn(cameraMatrix, 0, new Cartesian3());
+      let up = Matrix3.getColumn(cameraMatrix, 2, new Cartesian3());
+      if (fpvTransition) {
+        const progress = clamp((timestampMs - fpvTransition.started) / fpvTransition.duration, 0, 1);
+        const alpha = progress * progress * (3 - 2 * progress);
+        destination = Cartesian3.lerp(fpvTransition.position, destination, alpha, new Cartesian3());
+        // Rotate the camera basis with a quaternion; opposite view directions
+        // cannot produce a zero-length interpolated direction.
+        const basis = (forward, vertical) => {
+          const right = Cartesian3.normalize(Cartesian3.cross(forward, vertical, new Cartesian3()), new Cartesian3());
+          const correctedUp = Cartesian3.cross(right, forward, new Cartesian3());
+          const matrix = Matrix3.clone(Matrix3.IDENTITY);
+          Matrix3.setColumn(matrix, 0, right, matrix);
+          Matrix3.setColumn(matrix, 1, correctedUp, matrix);
+          Matrix3.setColumn(matrix, 2, Cartesian3.negate(forward, new Cartesian3()), matrix);
+          return Quaternion.fromRotationMatrix(matrix);
+        };
+        const rotation = Matrix3.fromQuaternion(Quaternion.slerp(basis(fpvTransition.direction, fpvTransition.up),
+          basis(direction, up), alpha, new Quaternion()));
+        direction = Cartesian3.negate(Matrix3.getColumn(rotation, 2, new Cartesian3()), new Cartesian3());
+        up = Matrix3.getColumn(rotation, 1, new Cartesian3());
+        if (progress === 1) fpvTransition = null;
+      }
       viewer.camera.setView({
         // Mount follows the shared visual position exactly; no second position
         // lag behind the model. Only the cosmetic rotation has extra damping.
-        destination: desiredCameraPosition,
+        destination,
         orientation: {
-          direction: Matrix3.getColumn(cameraMatrix, 0, new Cartesian3()),
-          up: Matrix3.getColumn(cameraMatrix, 2, new Cartesian3()),
+          direction,
+          up,
         },
       });
       return;
     }
-    const desiredAnchor = state.mode === ADVANCED_CAMERA_MODE.TACTICAL && targetPosition
+    const desiredAnchor = contactPosition ?? (state.mode === ADVANCED_CAMERA_MODE.TACTICAL && targetPosition
       ? Cartesian3.midpoint(selectedPosition, targetPosition, new Cartesian3())
-      : selectedPosition;
+      : selectedPosition);
     if (!state.smoothedAnchor) state.smoothedAnchor = Cartesian3.clone(desiredAnchor);
-    else Cartesian3.lerp(
+    else {
+      if (state.previousAnchor && !contactPosition) Cartesian3.add(state.smoothedAnchor,
+        Cartesian3.subtract(desiredAnchor, state.previousAnchor, new Cartesian3()), state.smoothedAnchor);
+      Cartesian3.lerp(
       state.smoothedAnchor,
       desiredAnchor,
-      dampingAlpha(deltaSec, cameraConfig?.positionDampingSec ?? 0.055),
+      dampingAlpha(deltaSec, contactPosition ? .22 : cameraConfig?.positionDampingSec ?? 0.055),
       state.smoothedAnchor,
     );
+    }
+    state.previousAnchor = Cartesian3.clone(desiredAnchor, state.previousAnchor);
 
+    // FOLLOW is a stabilized world-up chase: it may learn the flight path,
+    // but must not reproduce the missile body's turn in the same frame.
+    const chaseDampingSec = state.mode === ADVANCED_CAMERA_MODE.FOLLOW
+      ? Math.max(2.2, cameraConfig?.rotationDampingSec ?? 0)
+      : cameraConfig?.rotationDampingSec ?? 0.55;
     const lastHeading = state.lastHeadingDeg ?? headingDeg;
     const continuousHeading = lastHeading + ((headingDeg - lastHeading + 540) % 360 + 360) % 360 - 180;
     state.smoothHeadingDeg = state.smoothHeadingDeg == null ? headingDeg
       : dampMovingGoal(state.smoothHeadingDeg, lastHeading, continuousHeading, deltaSec,
-        cameraConfig?.rotationDampingSec ?? 0.55);
+        chaseDampingSec);
     state.lastHeadingDeg = continuousHeading;
     const headingRad = CesiumMath.toRadians(state.smoothHeadingDeg);
-    const directionAlpha = dampingAlpha(deltaSec, cameraConfig?.rotationDampingSec ?? 0.55);
+    const directionAlpha = dampingAlpha(deltaSec, chaseDampingSec);
     state.smoothedDirection.east = Math.sin(headingRad);
     state.smoothedDirection.north = Math.cos(headingRad);
     state.smoothedPitchDeg += (pitchDeg - state.smoothedPitchDeg) * directionAlpha;
@@ -284,7 +327,7 @@ export function createAdvancedCameraController(viewer) {
     if (state.mode === ADVANCED_CAMERA_MODE.TACTICAL && targetPosition) {
       baseDistanceM = clamp(separationM * 0.92 + 1_800, 3_000, 205_000);
     } else if (state.mode === ADVANCED_CAMERA_MODE.SIDE) {
-      baseDistanceM = clamp(5_500 + selectedAltitudeM * 0.08, 5_500, 32_000);
+      baseDistanceM = cameraConfig?.sideDistanceM ?? 55;
     } else if (state.mode === ADVANCED_CAMERA_MODE.THIRD_PERSON) {
       baseDistanceM = clamp(
         (cameraConfig?.followDistanceM ?? 16) + selectedAltitudeM * 0.001,
@@ -292,11 +335,11 @@ export function createAdvancedCameraController(viewer) {
         55,
       );
     } else {
-      baseDistanceM = clamp(900 + selectedAltitudeM * 0.028, 550, 9_000);
+      baseDistanceM = cameraConfig?.followDistanceM ?? 70;
     }
-    const minimumDistanceM = state.mode === ADVANCED_CAMERA_MODE.THIRD_PERSON ? 5 : 120;
+    const minimumDistanceM = state.mode === ADVANCED_CAMERA_MODE.THIRD_PERSON ? 5 : 10;
     const desiredDistanceM = clamp(
-      baseDistanceM * state.orbitZoomScale,
+      Math.max(baseDistanceM * state.orbitZoomScale, contactPosition ? 130 : 0),
       minimumDistanceM,
       900_000,
     );
@@ -304,8 +347,12 @@ export function createAdvancedCameraController(viewer) {
     else state.smoothedDistanceM += (desiredDistanceM - state.smoothedDistanceM)
       * dampingAlpha(deltaSec, 0.16);
 
-    const azimuthRad = CesiumMath.toRadians(smoothedHeadingDeg + state.orbitYawDeg);
-    const elevationRad = CesiumMath.toRadians(state.orbitPitchDeg);
+    const orbitAlpha = dampingAlpha(deltaSec, 0.32);
+    const yawDelta = ((state.orbitYawDeg - state.smoothOrbitYawDeg + 540) % 360 + 360) % 360 - 180;
+    state.smoothOrbitYawDeg += yawDelta * orbitAlpha;
+    state.smoothOrbitPitchDeg += (state.orbitPitchDeg - state.smoothOrbitPitchDeg) * orbitAlpha;
+    const azimuthRad = CesiumMath.toRadians(smoothedHeadingDeg + state.smoothOrbitYawDeg);
+    const elevationRad = CesiumMath.toRadians(state.smoothOrbitPitchDeg);
     const horizontalDistanceM = state.smoothedDistanceM * Math.cos(elevationRad);
     const configuredThirdHeightAdjustmentM = state.mode === ADVANCED_CAMERA_MODE.THIRD_PERSON
       ? (cameraConfig?.followHeightM ?? 4.4)
@@ -343,5 +390,5 @@ export function createAdvancedCameraController(viewer) {
     screenController.enableInputs = true;
   };
 
-  return { setMode, resetView, update, destroy };
+  return { setMode, resetView, update, destroy, beginFpvTransition };
 }

@@ -24,6 +24,8 @@ import gerberaUrl from '../assets/icons/UAVS/GERBERA/gerbera-top.png';
 import humveeUrl from '../assets/icons/Air Defence/HAMVEE WIHT GUN/humvee-mwg-isometric.png';
 import sampTRadarUrl from '../assets/icons/Air Defence/SAMP-T RADAR/samp-t-radar-isometric.png';
 import sampTLauncherUrl from '../assets/icons/Air Defence/SAMP-T LAUNCHER/samp-t-launcher-isometric.png';
+import torM1TopUrl from '../assets/icons/Air Defence/TOR-M1/tor-m1-top.svg';
+import missile9M331TopUrl from '../assets/icons/Air Defence/9M331 FOR TOR-M1/9m331-top.svg';
 import kh555ModelUrl from '../assets/icons/Cruise MIssiles/X-555/kh-555_missile_high-poly_fbx.glb?url';
 import geranModelUrl from '../assets/icons/UAVS/GERAN-2-SHAHED-136/iranian_shahed-136_military_drone.glb?url';
 import gerberaModelUrl from '../assets/icons/UAVS/GERBERA/uav_gerbera_low-poly.glb?url';
@@ -35,6 +37,8 @@ import { getTargetModelDisplayName, LIGHT_TARGET_MODEL, normalizeLightTargetMode
 export { LIGHT_TARGET_MODEL, LIGHT_TARGET_MODEL_OPTIONS } from './lightTargetModels.js';
 
 const ASSET_CATALOG = Object.freeze({
+  TOR_M1: { src: torM1TopUrl, label: 'Tor-M1', className: 'launcher', assetRotationOffsetDeg: 0 },
+  '9M331': { src: missile9M331TopUrl, label: '9М331', className: 'interceptor', assetRotationOffsetDeg: 0 },
   GERAN_2: { id: 'GERAN_2', displayName: 'Герань-2', category: 'UAV', src: geranUrl, icon: geranUrl, previewModel: geranModelUrl, previewCameraPreset: 'TOP_VIEW_UAV', label: 'Герань-2', className: 'uav', assetRotationOffsetDeg: 0 },
   GERBERA: { id: 'GERBERA', displayName: 'Gerbera', category: 'DECOY_UAV', src: gerberaUrl, icon: gerberaUrl, previewModel: gerberaModelUrl, previewCameraPreset: 'TOP_VIEW_UAV', label: 'Gerbera', className: 'uav', assetRotationOffsetDeg: 0 },
   KH_555: { id: 'KH_555', displayName: 'Х-555', category: 'CRUISE_MISSILE', src: kh555Url, icon: kh555Url, previewModel: kh555ModelUrl, previewCameraPreset: 'TOP_VIEW_MISSILE', label: 'Х-555', className: 'cruise', assetRotationOffsetDeg: 0 },
@@ -64,6 +68,7 @@ const ASSET_CATALOG = Object.freeze({
 });
 
 const SYSTEM_ASSETS = Object.freeze({
+  TOR_M1: { radar: 'TOR_M1', launcher: 'TOR_M1', interceptor: '9M331' },
   SHORT: { radar: 'IRIS_T_RADAR', launcher: 'IRIS_T_LAUNCHER', interceptor: 'IRIS_T_MISSILE' },
   MEDIUM: { radar: 'NASAMS_RADAR', launcher: 'NASAMS_LAUNCHER', interceptor: 'AIM_120' },
   LONG: { radar: 'PATRIOT_RADAR', launcher: 'PATRIOT_LAUNCHER', interceptor: 'PAC_3' },

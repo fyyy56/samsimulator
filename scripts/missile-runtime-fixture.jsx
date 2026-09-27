@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useEngine } from '../src/store/engine.js';
 import { useGameStore } from '../src/store/gameStore.js';
+import { getDestinationPoint } from '../src/store/geo.js';
 import { useOlsViewStore } from '../src/store/olsViewStore.js';
 
 // Scripted renderer inputs only. The real GameViewport, model lifecycle,
@@ -8,6 +9,8 @@ import { useOlsViewStore } from '../src/store/olsViewStore.js';
 export default function MissileRuntimeFixture() {
   const [spec, setSpec] = useState(null);
   const [moving, setMoving] = useState(false);
+  const [rangeM, setRangeM] = useState(100);
+  const [motorPhase, setMotorPhase] = useState('BOOST');
   useEffect(() => {
     if (!spec) return undefined;
     const engine = useEngine.getState();
@@ -21,23 +24,31 @@ export default function MissileRuntimeFixture() {
     let t = 0;
     const publish = () => {
       if (moving) t += 0.05;
-      const position = { lat: 50.0009, lng: 30 + Math.sin(t / 12) * 0.0002 };
+      const origin = getDestinationPoint(50, 30, 0, rangeM / 1000);
+      const position = { lat: origin.lat, lng: origin.lng + Math.sin(t / 12) * 0.0002 };
       const eastMps = Math.cos(t / 12) * 1.19;
       useEngine.setState(state => ({ simulationTime: state.simulationTime + 0.05,
         missiles: [{ id: `MODEL-${spec}`, interceptorSpecId: spec,
           position, worldPosition: { ...position, altitudeM: 60 }, altitudeM: 60,
           velocity: { eastMps, northMps: 0, upMps: 0 }, speedKmh: Math.abs(eastMps) * 3.6,
           heading: eastMps >= 0 ? 90 : 270, roll: 0, status: 'FLYING',
-          motorPhase: 'BOOST', flightTime: t, launchTime: state.simulationTime - t,
+          motorPhase, flightTime: t, launchTime: state.simulationTime - t,
         }] }));
     };
     publish();
     const timer = window.setInterval(publish, 50);
     return () => window.clearInterval(timer);
-  }, [spec, moving]);
+  }, [spec, moving, rangeM, motorPhase]);
   return <>
     {['INT-LONG-V1', 'INT-MEDIUM-V1', 'INT-SHORT-V1', 'INT-ASTER30-V1'].map((value, index) =>
       <button key={value} onClick={() => setSpec(value)}>MODEL {['PAC', 'AIM', 'IRIS', 'ASTER'][index]}</button>)}
+    <select aria-label="Model range" value={rangeM} onChange={e => setRangeM(Number(e.target.value))}>
+      <option value={100}>100 m</option><option value={1000}>1 km</option><option value={10000}>10 km</option>
+    </select>
+    <select aria-label="Model motor phase" value={motorPhase} onChange={e => setMotorPhase(e.target.value)}>
+      {['BOOST', 'SUSTAIN', 'COAST'].map(phase => <option key={phase}>{phase}</option>)}
+    </select>
+    <button onClick={() => setSpec(null)}>MODEL STOP</button>
     <button onClick={() => setMoving(value => !value)}>MODEL MOTION {moving ? 'ON' : 'OFF'}</button>
     <button onClick={() => {
       const station = useEngine.getState().searchRadars[0];
