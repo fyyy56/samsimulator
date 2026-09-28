@@ -304,6 +304,16 @@ export const INTERCEPTOR_SPECS = Object.freeze({
       navigationConstantTerminal: 5,
       navigationConstantReattack: 3.8,
       autopilotResponseTimeSec: 0.18,
+      // Game actuator calibration only; these are not PAC-3 hardware values.
+      controlActuators: Object.freeze({
+        enabled: true, kind: 'ACM_ATTITUDE', pulseBudget: 12,
+        maxAngleOfAttackDeg: 8, maxCorrectionAngleDeg: 35,
+        correctionDemandRatio: 0.12, minimumNeed: 0.18,
+        minimumAttitudeErrorRatio: 0.12,
+        attitudeResponseTimeSec: 0.13, aerodynamicResponseTimeSec: 0.05,
+        maxAngularImpulseRadSec: 0.65, angularDampingTimeSec: 0.055,
+        pulseGain: 0.8, pulseCooldownSec: 0.22, pulseDurationSec: 0.085,
+      }),
       midcourseInterceptSolutionSmoothing: 0.24,
       terminalInterceptSolutionSmoothing: 0.58,
       maxPredictionTimeSec: 65,
@@ -382,6 +392,13 @@ export const INTERCEPTOR_SPECS = Object.freeze({
       navigationConstantTerminal: 5.5,
       navigationConstantReattack: 4.2,
       autopilotResponseTimeSec: 0.13,
+      // Game PIF authority/impulse budget; no claim of real lateral thrust.
+      controlActuators: Object.freeze({
+        enabled: true, kind: 'PIF_PAF', maxLateralAccelerationMps2: 100,
+        resourceMps: 90, responseTimeSec: 0.045, attitudeResponseTimeSec: 0.11,
+        maxAngleOfAttackDeg: 10, maxCorrectionAngleDeg: 35,
+        correctionDemandRatio: 0.12,
+      }),
       midcourseInterceptSolutionSmoothing: 0.3,
       terminalInterceptSolutionSmoothing: 0.64,
       maxPredictionTimeSec: 55,

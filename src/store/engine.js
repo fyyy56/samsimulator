@@ -2539,6 +2539,7 @@ export const useEngine = create((set, get) => ({
       );
       let flight = advanceInterceptorFlight(missile, deltaTimeSec, physics, {
         headingChangeDeg,
+        controlActuators: guidance.controlActuators,
         headingCorrectionDeg: guidance.directionCorrectionDeg ?? guidance.headingCorrectionDeg,
         altitudeM: missile.altitudeM,
       });

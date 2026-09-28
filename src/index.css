@@ -1343,6 +1343,16 @@ button { font: inherit; }
 .sandbox-panel__spawn { width: 100%; min-height: 34px; margin-top: 5px; }
 .sandbox-panel__spawn { color: var(--hostile); border-color: rgba(223,105,98,0.52); background: rgba(223,105,98,0.1); font-weight: 650; letter-spacing: 0.07em; text-transform: uppercase; }
 .sandbox-panel__spawn:disabled { opacity: 0.35; cursor: default; }
+.sandbox-panel__route-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin: -5px 0 10px; color: var(--text-muted); font-size: 9px; }
+.sandbox-panel__route-controls > span,
+.sandbox-panel__route-controls > small { grid-column: 1 / -1; }
+.sandbox-panel__route-controls > span { font-family: var(--mono-font); color: var(--text-secondary); }
+.sandbox-panel__route-controls button { min-height: 27px; color: var(--text-secondary); background: rgba(255,255,255,0.025); border: 1px solid var(--panel-border); cursor: pointer; font-size: 8px; }
+.sandbox-panel__route-controls button:disabled { opacity: .35; cursor: default; }
+.sandbox-panel__route-controls > small { line-height: 1.4; }
+.sandbox-panel__route-clear { width:100%; min-height:28px; margin:0 0 7px; color:var(--text-secondary); background:rgba(255,255,255,.025); border:1px solid var(--panel-border); cursor:pointer; font-size:8px; text-transform:uppercase; }
+.sandbox-panel__route-clear.is-active { color:var(--accent); border-color:var(--panel-border-active); background:var(--selected); }
+.sandbox-panel__route-clear:disabled { opacity:.35; cursor:default; }
 .sandbox-panel__feedback { margin-top: 8px; color: var(--success); font-family: var(--mono-font); font-size: 8px; text-align: center; }
 .sandbox-panel__restore { padding: 9px 12px; color: var(--accent); text-transform: uppercase; }
 

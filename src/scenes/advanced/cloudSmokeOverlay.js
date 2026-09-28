@@ -45,19 +45,21 @@ export function createCloudSmokeOverlay(scene) {
         const x = screen.x * scale, y = screen.y * scale;
         if (radius < .7 || x < -radius || x > width + radius
           || y < -radius || y > height + radius) continue;
-        visible.push({x,y,radius,distance});
+        const opacity = puff.entity.billboard.color?.getValue(scene.frameState.time)?.alpha ?? 1;
+        if (opacity < .002) continue;
+        visible.push({x,y,radius,distance,opacity});
       }
       // Far to near: the last radial footprint is the nearest visible smoke.
       visible.sort((a,b) => b.distance - a.distance);
       for (const puff of visible.slice(-320)) {
-        const {x,y,radius,distance} = puff;
+        const {x,y,radius,distance,opacity} = puff;
         const normalized = Math.min(1, distance / 80000);
         const encoded = normalized * 255;
         const red = Math.floor(encoded), green = Math.floor((encoded - red) * 255);
         const shade = night ? 78 : 210;
         const color = layer2d.createRadialGradient(x,y,0,x,y,radius);
-        color.addColorStop(0, 'rgba(' + shade + ',' + shade + ',' + shade + ',.86)');
-        color.addColorStop(.52, 'rgba(' + shade + ',' + shade + ',' + shade + ',.46)');
+        color.addColorStop(0, 'rgba(' + shade + ',' + shade + ',' + shade + ',' + .86 * opacity + ')');
+        color.addColorStop(.52, 'rgba(' + shade + ',' + shade + ',' + shade + ',' + .46 * opacity + ')');
         color.addColorStop(1, 'rgba(' + shade + ',' + shade + ',' + shade + ',0)');
         layer2d.fillStyle = color;
         layer2d.fillRect(x-radius,y-radius,radius*2,radius*2);

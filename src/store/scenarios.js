@@ -311,9 +311,16 @@ export function createManualTargetDefinitions({
   terminalCorrectionCount = 0,
   terminalCorrectionSide = 'AUTO',
   ballisticManeuverMode = 'AUTO',
+  route: manualRoute = null,
 }) {
   const random = createSeededRandom(seed);
-  const objective = aimPoint ? {
+  const routePoints = Array.isArray(manualRoute) ? manualRoute.filter(point =>
+    Number.isFinite(point?.lat) && Number.isFinite(point?.lng)) : [];
+  const routeEnd = routePoints.at(-1);
+  const objective = routeEnd ? {
+    id: 'SANDBOX-ROUTE-END', name: 'Sandbox route', category: 'TEST ROUTE',
+    protectionPriority: 0.5, position: { ...routeEnd },
+  } : aimPoint ? {
     id: 'SANDBOX-AIM-POINT',
     name: 'Sandbox aim point',
     category: 'TEST AIM POINT',
@@ -337,9 +344,16 @@ export function createManualTargetDefinitions({
     gameplayProfile,
     random,
   });
+  const resolvedRoutePlan = routePoints.length >= 2 && type !== SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE
+    ? { route: routePoints.slice(1).map(point => ({ ...point, altitudeM })),
+      spawnPosition: { ...routePoints[0] }, routeType: 'MANUAL',
+      baseRouteType: 'MANUAL', corridor: null }
+    : sharedRoutePlan;
   const routePlanId = `${groupId}-ROUTE`;
   return Array.from({ length: count }, (_, index) => {
-    const memberRoute = count > 1
+    const memberRoute = routePoints.length >= 2 && type !== SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE
+      ? { spawnPosition: resolvedRoutePlan.spawnPosition, route: resolvedRoutePlan.route }
+      : count > 1
       ? createGroupMemberRoute({
         baseStartPosition: startPosition,
         destination: objective.position,
@@ -357,9 +371,9 @@ export function createManualTargetDefinitions({
       groupSize: count,
       launchPattern,
       routePlanId,
-      routeType: sharedRoutePlan.routeType,
-      baseRouteType: sharedRoutePlan.baseRouteType,
-      routeCorridor: sharedRoutePlan.corridor,
+      routeType: resolvedRoutePlan.routeType,
+      baseRouteType: resolvedRoutePlan.baseRouteType,
+      routeCorridor: resolvedRoutePlan.corridor,
       route: memberRoute.route,
       spawnPosition: memberRoute.spawnPosition,
       speedKmh: type === SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE

@@ -1689,9 +1689,37 @@ export function SandboxPanel({
   language,
   initiallyCollapsed = false,
   onFpvSpawn,
+  advanced3d = false,
+  routeMode = false,
+  onRouteModeChange,
+  routePreset = 'MANUAL',
+  onRoutePresetChange,
+  routeStyle = 'CRUISE',
+  onRouteStyleChange,
+  routePoints = [],
+  routeDistanceKm = 0,
+  routeEta = '—',
+  routeStartSelected = false,
+  routeEndSelected = false,
+  onSelectRouteStart,
+  onSelectRouteEnd,
+  selectingRouteStart = false,
+  selectingRouteEnd = false,
+  trajectoryTrailEnabled = false,
+  onTrajectoryTrailChange,
+  waypoints = [],
+  onUndoWaypoint,
+  onClearWaypoints,
+  panelOpen,
+  onPanelOpenChange,
 }) {
   const ru = language === UI_LANGUAGE.RU;
   const [collapsed, setCollapsed] = useState(initiallyCollapsed);
+  const isCollapsed = panelOpen === undefined ? collapsed : !panelOpen;
+  const setPanelCollapsed = value => {
+    if (panelOpen === undefined) setCollapsed(value);
+    onPanelOpenChange?.(!value);
+  };
   const draft = useSandboxSpawnDraftStore(state => state.draft);
   const setDraft = useSandboxSpawnDraftStore(state => state.setDraft);
   const { type, modelId, count, speedKmh, altitudeM, objectiveId,
@@ -1719,7 +1747,17 @@ export function SandboxPanel({
         ? SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE
         : SIMPLE_TARGET_TYPE.CRUISE_MISSILE;
     setType(nextType);
-    if (nextType === SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE) {
+    if (advanced3d && nextType === SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE) {
+      onRouteModeChange?.(false);
+      setCount(1);
+      setSpeedKmh(ISKANDER_GAMEPLAY_PROFILE.speedKmh);
+      setAltitudeM(250);
+    } else if (advanced3d) {
+      const limits = nextType === SIMPLE_TARGET_TYPE.CRUISE_MISSILE
+        ? { min: 500, max: 1500 } : { min: 70, max: 650 };
+      setSpeedKmh(Math.max(limits.min, Math.min(limits.max, speedKmh)));
+      setAltitudeM(Math.max(10, Math.min(15000, altitudeM)));
+    } else if (nextType === SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE) {
       setCount(1);
       setSpeedKmh(ISKANDER_GAMEPLAY_PROFILE.speedKmh);
       setAltitudeM(250);
@@ -1734,14 +1772,19 @@ export function SandboxPanel({
       setAltitudeM(250);
     }
   };
-  const speedRange = modelId === LIGHT_TARGET_MODEL.GERBERA
+  const speedRange = advanced3d && type !== SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE
+    ? type === SIMPLE_TARGET_TYPE.CRUISE_MISSILE ? { min: 500, max: 1500, step: 10 }
+      : { min: 70, max: 650, step: 10 }
+    : modelId === LIGHT_TARGET_MODEL.GERBERA
     ? { min: 140, max: 190, step: 5 }
     : type === SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE
     ? { min: ISKANDER_GAMEPLAY_PROFILE.speedKmh, max: ISKANDER_GAMEPLAY_PROFILE.speedKmh, step: 1 }
     : type === SIMPLE_TARGET_TYPE.CRUISE_MISSILE
     ? { min: 650, max: 950, step: 10 }
     : { min: 100, max: 500, step: 10 };
-  const altitudeRange = modelId === LIGHT_TARGET_MODEL.GERBERA
+  const altitudeRange = advanced3d && type !== SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE
+    ? { min: 10, max: 15000, step: 10 }
+    : modelId === LIGHT_TARGET_MODEL.GERBERA
     ? { min: 100, max: 800, step: 10 }
     : type === SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE
     ? { min: 250, max: 250, step: 1 }
@@ -1758,6 +1801,7 @@ export function SandboxPanel({
       speedKmh,
       altitudeM,
       startPosition,
+      ...(advanced3d && routeMode && waypoints.length >= 2 ? { route: waypoints } : {}),
       objectiveId,
       aimPoint: type === SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE ? aimPosition : null,
       terminalCorrectionAngleDeg,
@@ -1769,13 +1813,13 @@ export function SandboxPanel({
     window.setTimeout(() => setFeedback(''), 2600);
   };
 
-  if (collapsed) {
-    return <button className="sandbox-panel__restore" data-design-id="game-spawn-tools" data-design-name="Инструменты спавна" data-design-dynamic-text="true" style={designStyle} onClick={() => setCollapsed(false)}>{ru ? 'Добавить цель' : 'Spawn Target'}</button>;
+  if (isCollapsed) {
+    return <button className="sandbox-panel__restore" data-design-id="game-spawn-tools" data-design-name="Инструменты спавна" data-design-dynamic-text="true" style={designStyle} onClick={() => setPanelCollapsed(false)}>{ru ? 'Добавить цель' : 'Spawn Target'}</button>;
   }
 
   return (
     <section className="sandbox-panel" data-design-id="game-spawn-tools" data-design-name="Инструменты спавна" data-design-dynamic-text="true" style={designStyle}>
-      <header><div><span>{ru ? 'Полигон' : 'Sandbox'}</span><strong>{ru ? 'Добавить цель' : 'Spawn Target'}</strong></div><button onClick={() => setCollapsed(true)}>−</button></header>
+      <header><div><span>{ru ? 'Полигон' : 'Sandbox'}</span><strong>{ru ? 'Добавить цель' : 'Spawn Target'}</strong></div><button onClick={() => setPanelCollapsed(true)}>−</button></header>
       <label>{ru ? 'Тип' : 'Type'}</label>
       <div className="sandbox-panel__segments">
         {LIGHT_TARGET_MODEL_OPTIONS.map(option => (
@@ -1788,6 +1832,42 @@ export function SandboxPanel({
           </button>
         ))}
       </div>
+      {advanced3d && type !== SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE && <>
+        <label>{ru ? 'Маршрут' : 'Route'}</label>
+        <div className="sandbox-panel__segments">
+          <button className={!routeMode ? 'is-active' : ''} onClick={() => onRouteModeChange?.(false)}>{ru ? 'Одна точка' : 'Single point'}</button>
+          <button className={routeMode ? 'is-active' : ''} onClick={() => onRouteModeChange?.(true)}>{ru ? 'Маршрут' : 'Route'}</button>
+        </div>
+        {routeMode && <>
+          <select aria-label={ru ? 'Preset маршрута' : 'Route preset'} value={routePreset} onChange={event => onRoutePresetChange?.(event.target.value)}>
+            <option value="MANUAL">{ru ? 'Ручной' : 'Manual'}</option>
+            <option value="STRAIGHT">{ru ? 'Прямой' : 'Straight'}</option>
+            <option value="S_TURN">{ru ? 'S-манёвр' : 'S-turn'}</option>
+            <option value="ZIGZAG">{ru ? 'Зигзаг' : 'Zigzag'}</option>
+            <option value="TURN">{ru ? 'Поворот' : 'Turn'}</option>
+            <option value="SNAKE">{ru ? 'Змейка' : 'Snake'}</option>
+          </select>
+          {routePreset !== 'MANUAL' && routePreset !== 'STRAIGHT' && <>
+            <label>{ru ? 'Стиль' : 'Style'}</label>
+            <div className="sandbox-panel__segments">
+              <button className={routeStyle === 'CRUISE' ? 'is-active' : ''} onClick={() => onRouteStyleChange?.('CRUISE')}>{ru ? 'Плавный' : 'Cruise'}</button>
+              <button className={routeStyle === 'FIGHTER' ? 'is-active' : ''} onClick={() => onRouteStyleChange?.('FIGHTER')}>{ru ? 'Резкий' : 'Fighter'}</button>
+            </div>
+          </>}
+          {routePreset === 'MANUAL' ? <div className="sandbox-panel__route-controls">
+            <span>{ru ? 'Точек' : 'Points'}: {routePoints.length} · {ru ? 'Длина' : 'Distance'}: {routeDistanceKm.toFixed(1)} km · ETA {routeEta}</span>
+            <button disabled={!routePoints.length} onClick={onUndoWaypoint}>{ru ? 'Отменить последнюю' : 'Undo last'}</button>
+            <small>{ru ? 'Щёлкайте по глобусу: первая точка — старт.' : 'Click globe; first point is spawn.'}</small>
+          </div> : <div className="sandbox-panel__route-controls">
+            <button className={selectingRouteStart ? 'is-active' : ''} onClick={onSelectRouteStart}>{routeStartSelected ? (ru ? 'Старт задан' : 'Start set') : (ru ? 'Выбрать старт' : 'Set start')}</button>
+            <button className={selectingRouteEnd ? 'is-active' : ''} onClick={onSelectRouteEnd}>{routeEndSelected ? (ru ? 'Финиш задан' : 'End set') : (ru ? 'Выбрать финиш' : 'Set end')}</button>
+            <span>{ru ? 'Точек' : 'Points'}: {routePoints.length} · {ru ? 'Длина' : 'Distance'}: {routeDistanceKm.toFixed(1)} km · ETA {routeEta}</span>
+          </div>}
+          <button className="sandbox-panel__route-clear" disabled={!routePoints.length && !routeStartSelected && !routeEndSelected} onClick={onClearWaypoints}>{ru ? 'Очистить маршрут' : 'Clear route'}</button>
+        </>}
+        {advanced3d && <button className={`sandbox-panel__route-clear ${trajectoryTrailEnabled ? 'is-active' : ''}`} aria-pressed={trajectoryTrailEnabled}
+          onClick={() => onTrajectoryTrailChange?.(!trajectoryTrailEnabled)}>{ru ? 'След траектории' : 'Trajectory trail'} · {trajectoryTrailEnabled ? 'ON' : 'OFF'}</button>}
+      </>}
       <RangeControl label={ru ? 'Количество' : 'Quantity'} value={count} min={1} max={type === SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE ? 12 : 50} step={1} onChange={setCount} />
       {type !== SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE && <RangeControl label={ru ? 'Скорость' : 'Speed'} value={speedKmh} suffix={ru ? 'км/ч' : 'km/h'} {...speedRange} onChange={setSpeedKmh} />}
       {type === SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE ? (
@@ -1824,17 +1904,23 @@ export function SandboxPanel({
       ) : (
         <RangeControl label={ru ? 'Высота' : 'Altitude'} value={altitudeM} suffix={ru ? 'м' : 'm'} {...altitudeRange} onChange={setAltitudeM} />
       )}
-      {type !== SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE && <><label htmlFor="sandbox-objective">{ru ? 'Цель удара' : 'Estimated target'}</label>
-        <select id="sandbox-objective" value={objectiveId} onChange={event => setObjectiveId(event.target.value)}>
-          {THEATER_OBJECTS.map(objective => <option key={objective.id} value={objective.id}>{localizeObjective(objective.name, language)} · {localizeTechnicalTerm(objective.category, language)}</option>)}
-        </select></>}
-      <button className={`sandbox-panel__map-select ${selectingStart ? 'is-active' : ''}`} onClick={onSelectStart}>
+      {type !== SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE && <>
+        <label htmlFor="sandbox-objective">{ru ? (advanced3d && routeMode ? 'Своя цель · конец маршрута' : 'Цель удара') : (advanced3d && routeMode ? 'Custom target · route end' : 'Estimated target')}</label>
+        {advanced3d && routeMode
+          ? <div className="sandbox-panel__route-controls"><span>{waypoints.length
+            ? `${waypoints.at(-1).lat.toFixed(3)}, ${waypoints.at(-1).lng.toFixed(3)}`
+            : (ru ? 'Задайте финиш маршрута на глобусе' : 'Set route end on the globe')}</span></div>
+          : <select id="sandbox-objective" value={objectiveId} onChange={event => setObjectiveId(event.target.value)}>
+            {THEATER_OBJECTS.map(objective => <option key={objective.id} value={objective.id}>{localizeObjective(objective.name, language)} · {localizeTechnicalTerm(objective.category, language)}</option>)}
+          </select>}
+      </>}
+      {!routeMode && <button className={`sandbox-panel__map-select ${selectingStart ? 'is-active' : ''}`} onClick={onSelectStart}>
         {selectingStart ? (ru ? 'Укажите точку пуска…' : 'Click launch point on map…') : startPosition ? `${startPosition.lat.toFixed(2)}, ${startPosition.lng.toFixed(2)}` : (ru ? 'Выбрать точку пуска' : 'Select start on map')}
-      </button>
+      </button>}
       {type === SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE && <button className={`sandbox-panel__map-select ${selectingAim ? 'is-active' : ''}`} onClick={onSelectAim}>
         {selectingAim ? (ru ? 'Укажите точку попадания…' : 'Click aim point on map…') : aimPosition ? `${aimPosition.lat.toFixed(2)}, ${aimPosition.lng.toFixed(2)}` : (ru ? 'Выбрать точку попадания' : 'Select aim point')}
       </button>}
-      <button className="sandbox-panel__spawn" disabled={!startPosition || (type === SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE && !aimPosition)} onClick={spawn}>{ru ? 'Добавить' : 'Spawn'} {count}</button>
+      <button className="sandbox-panel__spawn" disabled={!startPosition || (advanced3d && routeMode && waypoints.length < 2) || (type === SIMPLE_TARGET_TYPE.BALLISTIC_MISSILE && !aimPosition)} onClick={spawn}>{ru ? 'Добавить' : 'Spawn'} {count}</button>
       <button className="sandbox-panel__map-select" disabled={!startPosition} onClick={() => {
         const id = useEngine.getState().launchControllableEntity({
           profileId: CONTROLLABLE_AIR_PROFILE_IDS.SKYFALL_FPV,

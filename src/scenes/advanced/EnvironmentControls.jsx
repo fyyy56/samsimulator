@@ -2,7 +2,8 @@ import { CLOUD_TYPES, ENVIRONMENT_PRESETS, useEnvironmentSettings } from './envi
 import './environment.css';
 
 const LABELS = {
-  DAY: 'ДЕНЬ', SUNRISE: 'РАССВЕТ', SUNSET: 'ЗАКАТ', NIGHT: 'НОЧЬ',
+  DAY_CLEAR: 'ЯСНЫЙ ДЕНЬ', DAY_OVERCAST: 'ПАСМУРНО',
+  SUNRISE: 'РАССВЕТ', SUNSET: 'ЗАКАТ', NIGHT: 'НОЧЬ',
   CLEAR: 'ЯСНО', THIN_SCATTERED: 'ТОНКИЕ РЕДКИЕ', CUMULUS: 'КУЧЕВЫЕ', OVERCAST: 'СПЛОШНАЯ',
 };
 export default function EnvironmentControls({ sandboxMode, ru }) {

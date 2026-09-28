@@ -1,5 +1,6 @@
 import { Cartesian3, CallbackProperty, CallbackPositionProperty, Color, Matrix3 } from 'cesium';
 import { bodyToWorldQuaternion, getVisualExhaustPosition } from './modelOrientation.js';
+import { createMiniControlJet } from './miniControlJet.js';
 
 const clamp = value => Math.max(0, Math.min(1, value));
 // Gameplay abstraction only: a short lateral impulse at the forward body,
@@ -62,17 +63,13 @@ export function createColdLaunchVfx(viewer, textures, { getVisualMode, getPose, 
       entry.visual = visual;
       const intensity = data.attitudeJetsIntensity ?? 0;
       if (intensity > .002 && !entry.jets.length) {
-        entry.jets = Array.from({ length: 8 }, (_, i) => viewer.entities.add({
-          position: new CallbackPositionProperty((_time, result) => {
-            const pose = getPose(key) ?? entry.visual;
-            const rotation = Matrix3.fromQuaternion(bodyToWorldQuaternion(pose.worldPosition, pose.quaternion), new Matrix3());
-            return Cartesian3.add(pose.worldPosition, Matrix3.multiplyByVector(rotation,
-              new Cartesian3(entry.forwardOffset ?? 0, 0, (entry.jetSign ?? 1) * i * (entry.jetSpacing ?? 0)),
-              new Cartesian3()), result ?? new Cartesian3());
-          }, false),
-          billboard: { image: textures.flash, sizeInMeters: true, width: 1, height: 1,
-            disableDepthTestDistance: 0 },
-        }));
+        entry.jets = createMiniControlJet(viewer, textures.flash, (i, _time, result) => {
+          const pose = getPose(key) ?? entry.visual;
+          const rotation = Matrix3.fromQuaternion(bodyToWorldQuaternion(pose.worldPosition, pose.quaternion), new Matrix3());
+          return Cartesian3.add(pose.worldPosition, Matrix3.multiplyByVector(rotation,
+            new Cartesian3(entry.forwardOffset ?? 0, 0, (entry.jetSign ?? 1) * i * (entry.jetSpacing ?? 0)),
+            new Cartesian3()), result ?? new Cartesian3());
+        });
       }
       const length = (presentation.physicalLengthMeters ?? 2.9) * (presentation.baseVisualScale ?? 1);
       const pulse = .55 + .45 * Math.pow(Math.sin((data.flightTime ?? 0) * 26), 2);

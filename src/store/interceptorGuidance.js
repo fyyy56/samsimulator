@@ -304,10 +304,13 @@ export function advanceInterceptorGuidance({ interceptor, track, simulationTime,
       command.commandedTotalAccelerationMps2 * launchGuidanceBlend,
   };
   const autopilot = applyMissileAutopilot({ interceptor, command: autopilotCommand,
-    deltaTimeSec, physics });
+    deltaTimeSec, physics, controlContext: { terminal: guidanceState === INTERCEPTOR_GUIDANCE_STATE.TERMINAL,
+      solutionStatus: solution.status, timeToGoSec: solution.timeToGoSec,
+      directionErrorDeg: solution.directionErrorDeg } });
   const interceptQuality = calculateInterceptQuality({ solution, command: autopilotCommand,
     interceptor, physics });
   return {
+    ...(autopilot.controlActuators ? { controlActuators: autopilot.controlActuators } : {}),
     guidance, heading: autopilot.heading, desiredHeading: solution.desiredHeading,
     flightPathAngleDeg: autopilot.flightPathAngleDeg,
     desiredFlightPathAngleDeg: solution.desiredFlightPathAngleDeg,

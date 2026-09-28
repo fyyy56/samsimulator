@@ -8,10 +8,11 @@
 .advanced-scene .advanced-toolbar .map-toolbar__button.is-active { color:var(--accent); background:var(--selected); box-shadow:inset 0 -1px 0 var(--accent); }
 .advanced-scene .advanced-toolbar span { display:flex; align-items:center; font-size:9px; opacity:.65; }
 
-.advanced-scene .advanced-entity-list { position:fixed; top:78px; bottom:auto; left:var(--advanced-edge); width:var(--hud-rail-width); max-height:calc(100dvh - 156px); overflow:auto; color:var(--text-primary); border:1px solid var(--panel-border); border-radius:0; background:var(--panel); box-shadow:var(--shadow); backdrop-filter:none; scrollbar-width:thin; }
-.advanced-scene .advanced-entity-list:not([open]) { width:132px; overflow:hidden; }
+.advanced-scene .advanced-entity-list { position:fixed; top:78px; bottom:auto; left:var(--advanced-edge); width:205px; max-height:calc(100dvh - 156px); overflow:auto; color:var(--text-primary); border:1px solid var(--panel-border); border-radius:0; background:var(--panel); box-shadow:var(--shadow); backdrop-filter:none; scrollbar-width:thin; }
+.advanced-scene .advanced-entity-list:not([open]) { width:205px; max-width:calc(100vw - 2 * var(--advanced-edge)); min-height:36px; overflow:hidden; }
 .advanced-entity-list > summary { padding:12px 14px; color:var(--text-secondary); cursor:pointer; font:650 var(--type-section)/1 var(--ui-font); letter-spacing:.11em; text-transform:uppercase; }
-.advanced-entity-list > summary small { float:right; color:var(--text-muted); font-size:9px; }
+.advanced-entity-list > summary { display:flex; align-items:center; gap:9px; white-space:nowrap; }
+.advanced-entity-list > summary small { color:var(--text-muted); font-size:9px; }
 .advanced-entity-list section { padding:8px 14px 12px; border-top:1px solid var(--panel-border); }
 .advanced-entity-list h3 { margin:4px 0 8px; color:var(--text-secondary); font:650 9px/1 var(--ui-font); }
 .advanced-entity-list button { margin:0; padding:7px 6px; border:0; border-left:2px solid transparent; border-radius:0; color:var(--text-secondary); background:transparent; }
@@ -36,8 +37,10 @@
 .advanced-scene :is(.advanced-telemetry,.ground-placement__card) button.is-active,.advanced-scene :is(.advanced-telemetry,.ground-placement__card) button[aria-pressed="true"] { color:var(--warning); border-color:var(--panel-border-active); background:var(--selected); box-shadow:inset 0 -1px 0 var(--warning); }
 .advanced-fire-control select { width:100%; padding:7px; }
 
-.advanced-scene .ground-placement { top:174px; right:auto; left:var(--advanced-edge); width:var(--hud-rail-width); }
-.advanced-scene .ground-placement > button,.advanced-scene .sandbox-panel__restore { padding:9px 12px; color:var(--accent); border:1px solid var(--panel-border); border-radius:0; background:var(--panel-strong); box-shadow:var(--shadow); font:600 9px/1 var(--ui-font); text-transform:uppercase; }
+.advanced-scene .ground-placement { top:174px; right:auto; left:var(--advanced-edge); width:205px; }
+.advanced-scene .ground-placement:has(.ground-placement__panel) { width:205px; }
+.advanced-scene .ground-placement > button,.advanced-scene .sandbox-panel__restore { width:auto; padding:9px 12px; color:var(--accent); border:1px solid var(--panel-border); border-radius:0; background:var(--panel-strong); box-shadow:var(--shadow); font:600 9px/1 var(--ui-font); text-transform:uppercase; }
+.advanced-scene .ground-placement:has(.ground-placement__panel) > button { width:100%; }
 .advanced-scene .ground-placement__panel,.advanced-scene .ground-placement__hint { margin-top:6px; padding:12px 14px; color:var(--text-secondary); border:1px solid var(--panel-border); border-top-color:var(--panel-border-active); border-radius:0; background:var(--panel-strong); box-shadow:var(--shadow); backdrop-filter:none; }
 .advanced-scene .ground-placement button { border-radius:0; font:600 9px/1 var(--ui-font); }
 .advanced-scene .ground-placement button:hover,.advanced-scene .ground-placement .is-active { color:var(--accent); border-color:var(--panel-border-active); background:var(--selected); }
@@ -49,7 +52,9 @@
 .advanced-scene .ground-placement__modes button { min-width:0; padding:6px 2px; }
 
 .advanced-session { position:absolute; z-index:25; top:126px; left:var(--advanced-edge); width:var(--hud-rail-width); color:var(--text-primary); border:1px solid var(--panel-border); border-radius:0; background:var(--panel); box-shadow:var(--shadow); font:10px/1.4 var(--ui-font); }
+.advanced-session--ols:not([open]) { width:max-content; max-width:calc(100vw - 2 * var(--advanced-edge)); }
 .advanced-session > summary { padding:12px 14px; color:var(--text-secondary); cursor:pointer; font-size:9px; font-weight:650; letter-spacing:.11em; }
+.advanced-session--ols > summary { white-space:nowrap; }
 .advanced-session > div { display:grid; gap:6px; padding:12px 14px; border-top:1px solid var(--panel-border); }
 .advanced-session label { display:grid; gap:4px; }
 .advanced-session select,.advanced-session button { width:100%; padding:7px; color:var(--text-secondary); border:1px solid var(--panel-border); border-radius:0; background:rgba(255,255,255,.03); font:9px/1 var(--ui-font); cursor:pointer; }
@@ -63,8 +68,10 @@
 .advanced-scene .advanced-overlay-menu summary { color:var(--text-secondary); border:1px solid var(--panel-border); border-radius:0; background:var(--panel-strong); box-shadow:var(--shadow); font:600 9px/1 var(--ui-font); }
 .advanced-scene .advanced-overlay-menu > .advanced-overlay-menu__panel { border-color:var(--panel-border); border-radius:0; background:var(--panel-strong); }
 .advanced-missile-log { max-height:36dvh; overflow:auto; border:1px solid var(--panel-border); background:var(--panel-strong); color:var(--text-secondary); font:10px/1.3 var(--ui-font); }
+.advanced-missile-log:not([open]) { width:max-content; max-width:100%; align-self:flex-end; }
 .advanced-missile-log > summary,.advanced-missile-log__entries details > summary { padding:9px 11px; cursor:pointer; list-style:none; }
-.advanced-missile-log summary small { float:right; color:var(--text-muted); font:9px/1 var(--mono-font); }
+.advanced-missile-log > summary { display:flex; align-items:center; gap:10px; white-space:nowrap; }
+.advanced-missile-log summary small { color:var(--text-muted); font:9px/1 var(--mono-font); }
 .advanced-missile-log__entries { padding:0 10px 10px; }
 .advanced-missile-log__entries details { border-top:1px solid var(--panel-border); }
 .advanced-missile-log__entries ol { margin:0; padding:2px 0 4px; list-style:none; }
@@ -79,7 +86,8 @@
 .advanced-scene .advanced-time-controls .map-toolbar__button.is-active { color:var(--accent); background:var(--selected); box-shadow:inset 0 -1px 0 var(--accent); }
 .advanced-scene .advanced-empty-state { bottom:90px; max-width:min(460px,70vw); color:var(--text-secondary); background:var(--panel); border-color:var(--panel-border); border-radius:0; box-shadow:var(--shadow); font:10px/1.6 var(--ui-font); text-align:center; pointer-events:none; }
 
-.advanced-scene:has(.advanced-entity-list[open]) :is(.advanced-session,.ground-placement,.sandbox-panel__restore),.advanced-scene:has(.advanced-session[open]) :is(.ground-placement,.sandbox-panel__restore),.advanced-scene:has(.ground-placement__panel,.ground-placement__hint) :is(.advanced-session,.sandbox-panel__restore) { visibility:hidden; }
+.advanced-scene:has(.advanced-entity-list[open]) :is(.advanced-session,.ground-placement),.advanced-scene:has(.advanced-session[open]) .ground-placement { visibility:hidden; }
+.advanced-scene:has(.ground-placement__panel,.ground-placement__hint) .advanced-session > div { display:none; }
 
 @media (max-width:700px) {
   .advanced-scene { --advanced-edge:10px; --hud-rail-width:210px; --hud-context-width:255px; }
@@ -88,3 +96,293 @@
   .advanced-scene .advanced-right-dock { top:auto; right:10px; bottom:58px; max-height:70dvh; }
   .advanced-scene .ground-placement__card { top:auto; right:10px; bottom:58px; max-height:70dvh; }
 }
+
+/* Match the existing 2D COMMAND glass shell in Advanced 3D. */
+.advanced-scene {
+  --command-glass: rgba(31,40,39,.58);
+  --command-glass-strong: rgba(24,33,33,.68);
+  --command-glass-soft: rgba(43,52,49,.48);
+  --command-glass-line: rgba(235,242,234,.34);
+  --command-glass-line-soft: rgba(235,242,234,.17);
+  --command-glass-text: #f7f7ef;
+  --command-glass-secondary: #d9ded7;
+  --command-glass-muted: #adb7b0;
+  --command-glass-gold: #f0ce78;
+  --command-glass-radar: #9ee0ce;
+  --command-glass-danger: #ef9b94;
+  --command-glass-radius: 22px;
+  --command-glass-shadow: 0 9px 24px rgba(26,33,29,.2);
+  --text-primary: var(--command-glass-text);
+  --text-secondary: var(--command-glass-secondary);
+  --text-muted: var(--command-glass-muted);
+}
+.advanced-scene :is(
+  .advanced-toolbar,.advanced-entity-list,.advanced-right-dock > *,
+  .ground-placement > button,.ground-placement__panel,.ground-placement__hint,
+  .advanced-session,.sandbox-panel,.sandbox-panel__restore,
+  .advanced-time-controls,.advanced-empty-state
+) {
+  border-color: var(--command-glass-line);
+  border-radius: var(--command-glass-radius);
+  background: linear-gradient(135deg,var(--command-glass-strong),var(--command-glass-soft));
+  box-shadow: var(--command-glass-shadow);
+  backdrop-filter: blur(16px) saturate(.88);
+  -webkit-backdrop-filter: blur(16px) saturate(.88);
+}
+.advanced-scene .advanced-toolbar {
+  padding: 3px 7px;
+  border-radius: 28px;
+  background: rgba(64,72,68,.54);
+}
+.advanced-scene .advanced-toolbar .map-toolbar__button,
+.advanced-scene .advanced-toolbar span {
+  color: var(--command-glass-secondary);
+  border-color: var(--command-glass-line-soft);
+  text-shadow: 0 1px 2px rgba(5,9,7,.42);
+}
+.advanced-scene .advanced-toolbar .map-toolbar__button:hover { color:#fff; background:rgba(255,255,255,.08); }
+.advanced-scene .advanced-toolbar .map-toolbar__button.is-active,
+.advanced-scene .advanced-time-controls .map-toolbar__button.is-active {
+  color:var(--command-glass-gold);
+  background:rgba(225,186,91,.17);
+  box-shadow:inset 0 -2px 0 rgba(240,206,120,.76);
+}
+.advanced-scene .advanced-entity-list,
+.advanced-scene .advanced-session { overflow:hidden auto; }
+.advanced-scene .advanced-session--ols { width:205px; }
+.advanced-scene .advanced-session--ols > summary { display:flex; box-sizing:border-box; width:100%; height:36px; min-height:36px; align-items:center; padding:0 14px; }
+.advanced-scene .advanced-session--ols[open] { width:205px; }
+.advanced-scene .advanced-session--ols > div { gap:4px; padding:7px 9px; }
+.advanced-scene .advanced-session--ols > div button { min-height:28px; padding:5px 7px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.advanced-scene .ground-placement > button { box-sizing:border-box; width:205px; height:36px; min-height:36px; }
+.advanced-scene .advanced-entity-list > summary,
+.advanced-scene .advanced-session > summary { color:var(--command-glass-secondary); }
+.advanced-scene .advanced-entity-list button.is-active,
+.advanced-scene .ground-placement button.is-active,
+.advanced-scene .sandbox-panel__segments button.is-active,
+.advanced-scene .sandbox-panel__route-clear.is-active {
+  color:var(--command-glass-gold);
+  border-color:rgba(240,206,120,.58);
+  background:rgba(224,174,68,.17);
+  box-shadow:inset 0 -1px 0 rgba(240,206,120,.7);
+}
+.advanced-scene .ground-placement > button {
+  padding:9px 14px;
+  color:var(--command-glass-secondary);
+}
+.advanced-scene .ground-placement__panel,
+.advanced-scene .ground-placement__hint,
+.advanced-scene .advanced-session,
+.advanced-scene .advanced-overlay-menu > .advanced-overlay-menu__panel,
+.advanced-scene .advanced-missile-log,
+.advanced-scene .advanced-telemetry,
+.advanced-scene .ground-placement__card { border-radius:var(--command-glass-radius); }
+.advanced-scene .ground-placement__panel nav button,
+.advanced-scene .ground-placement__panel > button,
+.advanced-scene .advanced-session button,
+.advanced-scene .advanced-session select,
+.advanced-scene .sandbox-panel :is(button,select),
+.advanced-scene .ground-placement__card button {
+  border-radius:12px;
+  border-color:var(--command-glass-line-soft);
+  background:rgba(255,255,255,.055);
+}
+.advanced-scene .ground-placement__panel button:hover,
+.advanced-scene .advanced-session button:hover,
+.advanced-scene .sandbox-panel button:hover { border-color:rgba(240,206,120,.62); }
+.advanced-scene .advanced-time-controls { overflow:hidden; padding:4px 8px; }
+.advanced-scene .advanced-time-controls .map-toolbar__button { border-radius:12px; }
+.advanced-scene .sandbox-panel__segments button,
+.advanced-scene .sandbox-panel__map-select,
+.advanced-scene .sandbox-panel__spawn,
+.advanced-scene .sandbox-panel select { border-radius:12px; }
+.advanced-scene input[type="range"] { accent-color:var(--command-glass-gold); }
+.advanced-scene .advanced-empty-state { border-color:var(--command-glass-line); }
+.advanced-scene .advanced-right-dock .advanced-overlay-menu:not([open]) {
+  width:max-content;
+  max-width:100%;
+  align-self:flex-end;
+}
+.advanced-scene .advanced-right-dock .advanced-overlay-menu[open] {
+  width:max-content;
+  max-width:100%;
+  align-self:flex-end;
+  overflow:visible;
+  border:0;
+  background:transparent;
+  box-shadow:none;
+  backdrop-filter:none;
+  -webkit-backdrop-filter:none;
+}
+.advanced-scene .advanced-right-dock .advanced-overlay-menu > summary {
+  display:flex;
+  width:max-content;
+  min-height:36px;
+  align-items:center;
+  gap:8px;
+  padding:9px 14px;
+  border-color:var(--command-glass-line);
+  border-radius:999px;
+  color:var(--command-glass-secondary);
+  background:linear-gradient(135deg,var(--command-glass-strong),var(--command-glass-soft));
+  box-shadow:var(--command-glass-shadow);
+  backdrop-filter:blur(16px) saturate(.88);
+  -webkit-backdrop-filter:blur(16px) saturate(.88);
+}
+.advanced-scene .sandbox-panel__restore {
+  top:16px;
+  right:var(--advanced-edge);
+  left:auto;
+  display:flex;
+  box-sizing:border-box;
+  width:136px;
+  height:36px;
+  min-height:36px;
+  align-items:center;
+  justify-content:center;
+  padding:0 10px;
+  white-space:nowrap;
+}
+.advanced-scene .advanced-right-dock :is(.environment-controls,.advanced-overlay-menu,.advanced-missile-log) {
+  box-sizing:border-box;
+  width:136px;
+  align-self:flex-end;
+  border:0;
+  background:transparent;
+  box-shadow:none;
+  backdrop-filter:none;
+  -webkit-backdrop-filter:none;
+}
+.advanced-scene .sandbox-panel__restore,
+.advanced-scene .advanced-right-dock :is(.environment-controls,.advanced-overlay-menu,.advanced-missile-log) > summary {
+  box-sizing:border-box;
+  width:136px;
+  height:36px;
+  min-height:36px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:0 10px;
+  border:1px solid var(--command-glass-line);
+  border-radius:999px;
+  color:var(--command-glass-secondary);
+  background:rgba(24,33,33,.84);
+  box-shadow:var(--command-glass-shadow);
+  backdrop-filter:blur(16px) saturate(.88);
+  -webkit-backdrop-filter:blur(16px) saturate(.88);
+  white-space:nowrap;
+}
+.advanced-scene .advanced-right-dock .advanced-missile-log > summary { gap:8px; }
+.advanced-scene .advanced-right-dock .advanced-missile-log > summary small { color:var(--command-glass-secondary); }
+.advanced-scene .advanced-telemetry--target {
+  max-height:calc(100dvh - 112px);
+  overflow-y:auto;
+  padding:11px 12px;
+  scrollbar-width:thin;
+}
+.advanced-scene .advanced-telemetry--target h2 { margin:3px 0; font-size:16px; }
+.advanced-scene .advanced-telemetry--target dl { gap:2px; margin:7px 0 0; }
+.advanced-scene .advanced-telemetry--target dl div { min-height:16px; gap:8px; }
+.advanced-scene .advanced-telemetry--target dt,
+.advanced-scene .advanced-telemetry--target dd { font-size:9px; line-height:1.2; }
+.advanced-scene .advanced-telemetry--target .advanced-fire-control { margin-top:8px; }
+.advanced-scene .advanced-telemetry--target .advanced-fire-control label { display:grid; gap:4px; margin-top:6px; font-size:8px; }
+.advanced-scene .advanced-telemetry--target .advanced-fire-control select { padding:5px 7px; }
+.advanced-scene .advanced-telemetry--target .advanced-telemetry__actions { gap:4px; margin-top:6px; }
+.advanced-scene .advanced-telemetry--target .advanced-telemetry__actions button { min-height:28px; padding:6px 8px; }
+.advanced-scene .advanced-telemetry--missile {
+  width: min(252px,100%);
+  align-self:flex-end;
+  padding:12px 13px;
+}
+.advanced-scene .advanced-telemetry--missile h2 { margin:4px 0 2px; font-size:17px; }
+.advanced-scene .advanced-telemetry--missile .advanced-telemetry__summary { gap:3px; margin-top:8px; }
+.advanced-scene .advanced-telemetry--missile .advanced-telemetry__summary div { gap:7px; }
+.advanced-scene .advanced-telemetry--missile .advanced-telemetry__summary dt,
+.advanced-scene .advanced-telemetry--missile .advanced-telemetry__summary dd { font-size:9px; }
+.advanced-scene .advanced-telemetry--missile .advanced-telemetry__advanced { margin-top:9px; }
+.advanced-scene .advanced-telemetry--missile .advanced-telemetry__advanced > summary { padding:7px 0 2px; }
+.advanced-scene .advanced-telemetry--missile .advanced-telemetry__advanced dl { gap:3px; margin-top:6px; }
+.advanced-scene .advanced-telemetry--missile .advanced-telemetry__advanced dl div { gap:7px; }
+.advanced-scene .advanced-telemetry--missile .advanced-telemetry__advanced dt,
+.advanced-scene .advanced-telemetry--missile .advanced-telemetry__advanced dd { font-size:8px; }
+.advanced-scene .advanced-entity-list[open] {
+  width:min(205px,calc(100vw - 2 * var(--advanced-edge)));
+}
+@media (min-width:701px) {
+  .advanced-scene .advanced-toolbar { right:170px; max-width:calc(100vw - 188px); }
+}
+.advanced-scene .advanced-overlay-menu > .advanced-overlay-menu__panel {
+  width:250px;
+  padding:12px 14px;
+  border:1px solid var(--command-glass-line);
+  border-radius:var(--command-glass-radius);
+  background:linear-gradient(135deg,var(--command-glass-strong),var(--command-glass-soft));
+  box-shadow:var(--command-glass-shadow);
+  backdrop-filter:blur(16px) saturate(.88);
+  -webkit-backdrop-filter:blur(16px) saturate(.88);
+}
+.advanced-scene .advanced-overlay-menu section > b,
+.advanced-scene .advanced-overlay-menu__debug > summary { color:var(--command-glass-gold); }
+.advanced-scene .advanced-overlay-menu__debug > summary {
+  display:inline-flex;
+  width:max-content;
+  max-width:100%;
+  align-items:center;
+  border-color:var(--command-glass-line-soft);
+  border-radius:12px;
+}
+.advanced-scene .advanced-overlay-menu label { color:var(--command-glass-secondary); }
+.advanced-scene .advanced-overlay-menu input { accent-color:var(--command-glass-gold); }
+.advanced-scene .advanced-overlay-menu__debug { border-top-color:var(--command-glass-line-soft); }
+.advanced-scene .advanced-overlay-menu small { color:var(--command-glass-muted); }
+.advanced-scene .environment-controls .advanced-overlay-menu__panel { width:250px; }
+.advanced-scene .environment-controls select {
+  border-color:var(--command-glass-line-soft);
+  border-radius:12px;
+  color:var(--command-glass-text);
+  background:rgba(24,33,33,.78);
+}
+.advanced-scene .advanced-missile-log:not([open]) { align-self:flex-end; }
+.advanced-scene .ground-placement:has(.ground-placement__panel) { width:max-content; }
+.advanced-scene .ground-placement:has(.ground-placement__panel) > button { width:auto; }
+.advanced-scene .ground-placement__panel {
+  display:grid;
+  width:max-content;
+  max-width:min(220px,calc(100vw - 36px));
+  grid-template-columns:minmax(0,1fr);
+}
+.advanced-scene .ground-placement__panel nav { display:grid; grid-template-columns:1fr; }
+.advanced-scene .ground-placement__panel nav button,
+.advanced-scene .ground-placement__panel > button {
+  width:100%;
+  min-width:0;
+  text-align:left;
+}
+.advanced-scene .ground-placement__panel nav button,
+.advanced-scene .ground-placement__panel > button { text-align:center; }
+
+/* Compact, aligned controls in the left 3D column; the expanded lists keep
+   enough width for their contents. */
+.advanced-scene .advanced-entity-list:not([open]),
+.advanced-scene .advanced-session--ols:not([open]),
+.advanced-scene .ground-placement:not(:has(.ground-placement__panel,.ground-placement__hint)) {
+  box-sizing:border-box;
+  width:min(156px,calc(100vw - 2 * var(--advanced-edge)));
+}
+.advanced-scene .advanced-entity-list:not([open]) > summary,
+.advanced-scene .advanced-session--ols:not([open]) > summary,
+.advanced-scene .ground-placement:not(:has(.ground-placement__panel,.ground-placement__hint)) > button {
+  box-sizing:border-box;
+  display:flex;
+  width:100%;
+  height:36px;
+  min-height:36px;
+  align-items:center;
+  justify-content:center;
+  padding:0 10px;
+  font:650 9px/1 var(--ui-font);
+  letter-spacing:.06em;
+  white-space:nowrap;
+}
+.advanced-scene .advanced-entity-list:not([open]) > summary { gap:7px; }

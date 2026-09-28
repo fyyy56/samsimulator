@@ -90,6 +90,7 @@ import MissileLog from './advanced/MissileLog.jsx';
 import GroundPlacement, { GroundObjectList } from './advanced/GroundPlacement.jsx';
 import { groundObjects } from './advanced/groundPlacement.js';
 import { createColdLaunchVfx } from './advanced/coldLaunchVfx.js';
+import { createTerminalControlVfx } from './advanced/terminalControlVfx.js';
 import { createAsterBoosterDebris, updateAsterBoosterDebris } from './advanced/asterBoosterDebris.js';
 import { createImpactVfx } from './advanced/impactVfx.js';
 import { sampleTrackPresentation, withTrackPresentation } from '../ui/trackPresentation.js';
@@ -175,15 +176,19 @@ const getKinematics = entity => {
     speedKmh: entity.speedKmh ?? entity.velocity?.speedKmh ?? speedMps * 3.6,
     headingDeg: entity.entityType === CONTROLLABLE_AIR_ENTITY_TYPE
       ? entity.heading
-      : (Math.atan2(velocity.eastMps, velocity.northMps) * 180 / Math.PI + 360) % 360,
+      : entity.controlActuators?.bodyHeadingDeg
+        ?? (Math.atan2(velocity.eastMps, velocity.northMps) * 180 / Math.PI + 360) % 360,
     pitchDeg: entity.entityType === CONTROLLABLE_AIR_ENTITY_TYPE
       ? entity.pitch
-      : Math.atan2(velocity.upMps, Math.max(horizontalSpeedMps, 0.001)) * 180 / Math.PI,
+      : entity.controlActuators?.bodyPitchDeg
+        ?? Math.atan2(velocity.upMps, Math.max(horizontalSpeedMps, 0.001)) * 180 / Math.PI,
     rollDeg: entity.roll ?? 0,
     angularRatesDegPerSec: entity.angularVelocity ?? null,
     coldLaunchPhase: entity.coldLaunchPhase,
     attitudeJetsIntensity: entity.attitudeJetsIntensity,
     attitudeCorrectionDeg: entity.attitudeCorrectionDeg,
+    controlActuators: entity.controlActuators,
+    guidanceEnabled: entity.guidanceEnabled,
     motorPhase: entity.motorPhase,
     flightTime: entity.flightTime,
 
@@ -215,28 +220,31 @@ function AdvancedToolbar({ cameraMode, setCameraMode, resetCamera, returnToComma
   const modes = controllableSelected
     ? [CAMERA_MODE.THIRD_PERSON, CAMERA_MODE.FIRST_PERSON, CAMERA_MODE.FPV]
     : [CAMERA_MODE.FREE, CAMERA_MODE.FOLLOW, CAMERA_MODE.SIDE, CAMERA_MODE.TACTICAL];
-  return <div className="advanced-toolbar map-toolbar">
-    <button className="map-toolbar__button" onClick={returnToCommand}>← {ru ? 'МЕНЮ' : 'MENU'}</button>
-    {modes.map(mode => (
-      <button key={mode} className={`map-toolbar__button${cameraMode === mode ? ' is-active' : ''}`}
-        onClick={() => setCameraMode(mode)}>{tr(mode)}</button>
-    ))}
-    {cameraMode !== CAMERA_MODE.FREE && (
-      <button className="map-toolbar__button" onClick={resetCamera}>{ru ? 'СБРОС ВИДА' : 'RESET VIEW'}</button>
-    )}
-    {Object.values(ADVANCED_VISUAL_MODE).map(mode => (
-      <button key={mode} className={`map-toolbar__button${visualMode === mode ? ' is-active' : ''}`}
-        aria-pressed={visualMode === mode} onClick={() => setVisualMode(mode)}>{tr(mode)}</button>
-    ))}
-    <button className="map-toolbar__button" onClick={openOls}>OLS</button>
-    <span>{tr('FIRE')}</span>
-    {['AUTO', 'MANUAL'].map(mode => <button key={mode}
-      className={`map-toolbar__button${fireMode === mode ? ' is-active' : ''}`}
-      aria-pressed={fireMode === mode}
-      onClick={() => useEngine.getState().setAllBatteriesControlMode(mode)}>{tr(mode)}</button>)}
-    {engineeringEnabled && <button className="map-toolbar__button" onClick={spawnTestEntity}>{ru ? 'СОЗДАТЬ TEST FPV' : 'SPAWN TEST FPV'}</button>}
-    <span>{tr(sandboxMode ? '3D SANDBOX' : 'ADVANCED 3D')}</span>
-  </div>;
+  return <>
+    <div className="advanced-toolbar map-toolbar">
+      <button className="map-toolbar__button" onClick={returnToCommand}>← {ru ? 'МЕНЮ' : 'MENU'}</button>
+      {Object.values(ADVANCED_VISUAL_MODE).map(mode => (
+        <button key={mode} className={`map-toolbar__button${visualMode === mode ? ' is-active' : ''}`}
+          aria-pressed={visualMode === mode} onClick={() => setVisualMode(mode)}>{tr(mode)}</button>
+      ))}
+      <button className="map-toolbar__button" onClick={openOls}>OLS</button>
+      <span>{tr('FIRE')}</span>
+      {['AUTO', 'MANUAL'].map(mode => <button key={mode}
+        className={`map-toolbar__button${fireMode === mode ? ' is-active' : ''}`}
+        aria-pressed={fireMode === mode}
+        onClick={() => useEngine.getState().setAllBatteriesControlMode(mode)}>{tr(mode)}</button>)}
+      {engineeringEnabled && <button className="map-toolbar__button" onClick={spawnTestEntity}>{ru ? 'СОЗДАТЬ TEST FPV' : 'SPAWN TEST FPV'}</button>}
+      <span>{tr(sandboxMode ? '3D SANDBOX' : 'ADVANCED 3D')}</span>
+    </div>
+    <details className="advanced-camera-menu">
+      <summary>{ru ? 'ВИД' : 'VIEW'}</summary>
+      <nav>{modes.map(mode => <button key={mode}
+        className={cameraMode === mode ? 'is-active' : ''}
+        onClick={() => setCameraMode(mode)}>{tr(mode)}</button>)}
+        {cameraMode !== CAMERA_MODE.FREE && <button onClick={resetCamera}>{ru ? 'СБРОС ВИДА' : 'RESET VIEW'}</button>}
+      </nav>
+    </details>
+  </>;
 }
 
 function AdvancedTimeControls({ timeScale, setTimeScale, ru }) {
@@ -356,7 +364,7 @@ function SelectedTelemetry({ entity, trackOptions, ru, debugOverlayVisible, cont
       <div><dt>{tr('PATH')}</dt><dd title={entity.visualDebug.resolvedModelPath}>{entity.visualDebug.resolvedModelPath.split('/').at(-1)}</dd></div>
     </dl>
   ) : null;
-  return <aside className={`advanced-telemetry target-lock${isInterceptor ? ' advanced-telemetry--missile' : ''}`}>
+  return <aside className={`advanced-telemetry target-lock${entity.kind === ADVANCED_ENTITY_KIND.TARGET ? ' advanced-telemetry--target' : ''}${isInterceptor ? ' advanced-telemetry--missile' : ''}`}>
     <small>{tr(entityKindLabel)}</small>
     <h2>{entity.displayName}</h2>
     <strong>{entity.id}</strong>
@@ -583,6 +591,11 @@ export default function AdvancedScene({ active = true, onVisualFrame, sandboxMod
   const setControllableSelectedTrack = useEngine(state => state.setControllableSelectedTrack);
   const [cameraMode, setCameraModeState] = useState(CAMERA_MODE.FREE);
   const [selectedKey, setSelectedKey] = useState(null);
+  const [sandboxTrajectoryTrailEnabled, setSandboxTrajectoryTrailEnabled] = useState(false);
+  const sandboxTrajectoryTrailEnabledRef = useRef(false);
+  useEffect(() => { sandboxTrajectoryTrailEnabledRef.current = sandboxTrajectoryTrailEnabled; }, [sandboxTrajectoryTrailEnabled]);
+  const sandboxModeRef = useRef(sandboxMode);
+  useEffect(() => { sandboxModeRef.current = sandboxMode; }, [sandboxMode]);
   const [selectedTelemetry, setSelectedTelemetry] = useState(null);
   const [entitySnapshot, setEntitySnapshot] = useState({
     targets: [], missiles: [], searchRadars: [], controllables: [], tracks: [],
@@ -1599,8 +1612,13 @@ export default function AdvancedScene({ active = true, onVisualFrame, sandboxMod
           viewer.camera.positionWC, position) / 20_000, 0, 1);
       },
     });
+    const terminalControlVfx = createTerminalControlVfx(viewer, effectTextures, {
+      getVisualMode: () => visualModeRef.current,
+      getPose: key => sampleVisualState(visualStates, key, visualTimeRef.current),
+    });
     const removePlume = key => {
       coldLaunchVfx.remove(key);
+      terminalControlVfx.remove(key);
       const plume = plumeEntitiesRef.current.get(key);
       if (!plume) return;
       plume.forEach(entity => {
@@ -1614,6 +1632,7 @@ export default function AdvancedScene({ active = true, onVisualFrame, sandboxMod
 
     const updatePlume = (key, simulationEntity, currentPosition, presentation, emitting, visual) => {
       coldLaunchVfx.update(key, simulationEntity, visual, presentation);
+      terminalControlVfx.update(key, simulationEntity, visual, presentation);
       const plumeProfile = getMissilePlumeProfile(simulationEntity.coldLaunchPhase
         ? { ...simulationEntity, motorPhase: visual.kinematics?.motorPhase ?? simulationEntity.motorPhase }
         : simulationEntity);
@@ -1682,6 +1701,8 @@ export default function AdvancedScene({ active = true, onVisualFrame, sandboxMod
           Cartesian3.normalize(side, side);
           const size = smokeProfile.widthScale * (17 + smokePower * 8) * (.8 + (seed % 7) * .065);
           const createdAt = now;
+          const cloudPosition = new Cartesian3();
+          let cloudVisibility = 1, cloudTarget = 1, cloudSampleAt = 0, cloudBlendAt = createdAt;
           const age = () => clamp((performance.now() - createdAt)
             / smokeProfile.lifetimeMs, 0, 1);
           const puff = viewer.entities.add({
@@ -1700,6 +1721,16 @@ export default function AdvancedScene({ active = true, onVisualFrame, sandboxMod
               scale: new CallbackProperty(() => .6 + Math.pow(age(), smokeProfile.expansionExponent) * 3.1 * smokeProfile.expansionScale, false),
               color: new CallbackProperty(() => {
                 const t = age();
+                const cloudNow = performance.now();
+                if (!environment.isEnabled()) cloudVisibility = cloudTarget = 1;
+                else {
+                  if (cloudNow - cloudSampleAt > 80) {
+                    cloudTarget = environment.cloudTransmission(puff.position.getValue(viewer.clock.currentTime, cloudPosition));
+                    cloudSampleAt = cloudNow;
+                  }
+                  cloudVisibility += (cloudTarget - cloudVisibility) * (1 - Math.exp(-(cloudNow - cloudBlendAt) / 120));
+                }
+                cloudBlendAt = cloudNow;
                 const thermal = visualModeRef.current === ADVANCED_VISUAL_MODE.THERMAL;
                 const heat = .28 + .72 * Math.exp(-t * 6);
                 const night = environment.isEnabled() && useEnvironmentSettings.getState().preset === 'NIGHT';
@@ -1712,7 +1743,7 @@ export default function AdvancedScene({ active = true, onVisualFrame, sandboxMod
                       .67 + (seed % 3) * .05 - distantHaze * .06);
                 return shade.withAlpha(Math.pow(1 - t, smokeProfile.fadeExponent) * plumeProfile.opacity * smokeProfile.opacityScale
                   * smokePower * (.65 + (seed % 5) * .055) * (night ? .65 : 1)
-                  * (1 - distantHaze * .35));
+                  * (1 - distantHaze * .35) * cloudVisibility);
               }, false),
               disableDepthTestDistance: 0,
               distanceDisplayCondition: new DistanceDisplayCondition(0, 260_000),
@@ -1723,6 +1754,10 @@ export default function AdvancedScene({ active = true, onVisualFrame, sandboxMod
         smokeStrands.set(key, { position: Cartesian3.clone(exhaustPosition), at: now,
           sequence: sequence + count });
       }
+      const cloudVisibility = environment.cloudTransmission(exhaustPosition);
+      plume.cloudVisibility = (plume.cloudVisibility ?? cloudVisibility)
+        + (cloudVisibility - (plume.cloudVisibility ?? cloudVisibility)) * (1 - Math.exp(-dt / .12));
+      if (!environment.isEnabled()) plume.cloudVisibility = 1;
       plume.forEach((entity, index) => {
         const flicker = 1 + .10 * Math.sin(now * .041 + index * 2.1)
           + .045 * Math.sin(now * .073 - index);
@@ -1731,7 +1766,7 @@ export default function AdvancedScene({ active = true, onVisualFrame, sandboxMod
         entity.billboard.scale = diameter / 64;
         entity.billboard.color = (visualModeRef.current === ADVANCED_VISUAL_MODE.THERMAL
           ? Color.WHITE : Color.fromCssColorString(index < 3 ? '#ffffff' : '#ffc579'))
-          .withAlpha((1 - index / 14) * clamp(plume.intensity * 1.8, 0, 1));
+          .withAlpha((1 - index / 14) * clamp(plume.intensity * 1.8, 0, 1) * plume.cloudVisibility);
       });
     };
 
@@ -2704,6 +2739,7 @@ export default function AdvancedScene({ active = true, onVisualFrame, sandboxMod
       trailEntityRef.current = [];
       altitudeReferenceRef.current = null;
       coldLaunchVfx.destroy();
+      terminalControlVfx.destroy();
       environment.destroy();
       olsController.destroy();
       olsControllerRef.current = null;
@@ -2749,7 +2785,10 @@ export default function AdvancedScene({ active = true, onVisualFrame, sandboxMod
       const trailEntities = trailEntityRef.current;
       const selectedKind = parseSelectionKey(selectedKeyRef.current)?.kind;
       const trailEnabled = selectedKind === ADVANCED_ENTITY_KIND.INTERCEPTOR
-        ? overlaysRef.current.missileVectors : overlaysRef.current.targetVectors;
+        ? overlaysRef.current.missileVectors
+        : overlaysRef.current.targetVectors
+          || (sandboxModeRef.current && sandboxTrajectoryTrailEnabledRef.current
+            && selectedKind === ADVANCED_ENTITY_KIND.TARGET);
       if (trailEnabled && selectedHistory?.length > 1
         && ![CAMERA_MODE.FIRST_PERSON, CAMERA_MODE.FPV].includes(cameraModeRef.current)) {
         const segmentSize = Math.max(2, Math.ceil(selectedHistory.length / 3));
@@ -3244,7 +3283,9 @@ export default function AdvancedScene({ active = true, onVisualFrame, sandboxMod
         const battery = useEngine.getState().batteries.find(item => item.id === stationId);
         openCanonicalTorOls(battery);
       }} ru={ru} />
-    {!cameraFeedMode && <AdvancedSessionPanel viewer={viewerReady} ru={ru} onFocus={key => selectEntity(key, true)}
+    {!cameraFeedMode && <AdvancedSessionPanel viewer={viewerReady} ru={ru} sandboxMode={sandboxMode}
+      trajectoryTrailEnabled={sandboxTrajectoryTrailEnabled} onTrajectoryTrailChange={setSandboxTrajectoryTrailEnabled}
+      onFocus={key => selectEntity(key, true)}
       onOls={stationId => {
         const tor = useEngine.getState().batteries.find(item => item.id === stationId
           && item.category === 'TOR_M1');

@@ -35,8 +35,8 @@ float volumeNoise(vec3 p) {
 float field(vec3 p, float detail) {
   vec2 weather = (p.xy + vec2(drift, drift * .31))
     / (cloudKind < 1.5 ? 7000.0 : 14000.0);
-  float localBase = cloudBase + (noise(weather + 19.0) - .5) * 420.0;
-  float localThickness = cloudThickness * mix(.72, 1.28, noise(weather * 1.7 + 7.0));
+  float localBase = cloudBase + noise(weather * .75 + 19.0) * 6300.0;
+  float localThickness = cloudThickness * mix(.65, 1.55, noise(weather * 1.7 + 7.0));
   float h = (p.z + dot(p.xy, p.xy) / 12740000.0 - localBase) / localThickness;
   if (h <= 0.0 || h >= 1.0) return 0.0;
   vec2 q = (p.xy + vec2(drift, drift * .31)) / (cloudKind < 1.5 ? 3600.0 : 5800.0);
@@ -70,10 +70,10 @@ vec2 shellIntersection(vec3 ray, float altitude) {
 void main() {
   vec4 eyeRay = czm_inverseProjection * vec4(v_textureCoordinates * 2.0 - 1.0, 1.0, 1.0);
   vec3 ray = normalize(viewToLocal * normalize(eyeRay.xyz / eyeRay.w));
-  vec2 outer = shellIntersection(ray, cloudBase + cloudThickness * 1.28 + 210.0);
+  vec2 outer = shellIntersection(ray, cloudBase + 6300.0 + cloudThickness * 1.55 + 210.0);
   vec2 inner = shellIntersection(ray, cloudBase - 210.0);
   float altitude = cameraLocal.z + dot(cameraLocal.xy,cameraLocal.xy) / 12740000.0;
-  float start = max(0.0, outer.x), finish = min(65000.0, outer.y);
+  float start = max(45000.0, outer.x), finish = min(85000.0, outer.y);
   if (altitude < cloudBase - 210.0) start = max(start, inner.y);
   else if (inner.x > 0.0) finish = min(finish, inner.x);
   float depth = czm_readDepth(depthTexture, v_textureCoordinates);
@@ -87,9 +87,9 @@ void main() {
   // neighboring pixels. Quadratic spacing resolves the nearby cloud body first.
   float transmittance = 1.0;
   vec3 radiance = vec3(0.0);
-  for (int i = 0; i < 56; i++) {
-    float nearFraction = float(i) / 56.0;
-    float farFraction = float(i + 1) / 56.0;
+  for (int i = 0; i < 44; i++) {
+    float nearFraction = float(i) / 44.0;
+    float farFraction = float(i + 1) / 44.0;
     float segmentStart = start + (finish - start) * nearFraction * nearFraction;
     float segmentEnd = start + (finish - start) * farFraction * farFraction;
     float stepSize = segmentEnd - segmentStart;
@@ -97,7 +97,8 @@ void main() {
     float distanceAlongRay = segmentStart + stratumOffset * stepSize;
     vec3 p = cameraLocal + ray * distanceAlongRay;
     float detail = 1.0 - smoothstep(2500.0, 16000.0, distanceAlongRay);
-    float d = field(p, detail) * (1.0 - smoothstep(35000.0, 65000.0, distanceAlongRay));
+    float d = field(p, detail) * .35 * (1.0 - smoothstep(.06, .18, abs(ray.z))) * smoothstep(45000.0, 55000.0, distanceAlongRay)
+      * (1.0 - smoothstep(75000.0, 85000.0, distanceAlongRay));
     if (d > .0002) {
       float opacity = 1.0 - exp(-d * stepSize * .0032);
       if (hasSceneDepth) opacity *= smoothstep(0.0, max(25.0, stepSize * 1.5),

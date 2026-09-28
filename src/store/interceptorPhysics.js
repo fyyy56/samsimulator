@@ -167,6 +167,7 @@ export function advanceInterceptorFlight(
     headingChangeDeg = 0,
     headingCorrectionDeg = headingChangeDeg,
     altitudeM = interceptor.altitudeM ?? 0,
+    controlActuators = null,
   } = {},
 ) {
   const nextFlightTime = interceptor.flightTime + deltaTimeSec;
@@ -197,8 +198,15 @@ export function advanceInterceptorFlight(
   const dragFactor = 1 + dragRatePerMeter * speedAfterThrustMps * deltaTimeSec;
   const speedAfterDragMps = speedAfterThrustMps / dragFactor;
   const dragLossMps = Math.max(0, speedAfterThrustMps - speedAfterDragMps);
-  const normalizedTurn = Math.min(1, Math.abs(headingChangeDeg) / 90);
-  const normalizedCorrectionDemand = Math.min(1, Math.abs(headingCorrectionDeg) / 90);
+  // PIF does not incur an aerodynamic-turn charge. PAC's body AoA uses the
+  // existing high-angle loss multiplier, with no extra arbitrary speed penalty.
+  const control = physics.controlActuators?.enabled ? controlActuators : null;
+  const aerodynamicTurnDeg = control?.kind === 'PIF_PAF'
+    ? control.aerodynamicTurnDeg : headingChangeDeg;
+  const aoaDemandDeg = control?.kind === 'ACM_ATTITUDE'
+    ? control.angleOfAttackDeg / physics.controlActuators.maxAngleOfAttackDeg * 90 : 0;
+  const normalizedTurn = Math.min(1, Math.abs(aerodynamicTurnDeg) / 90);
+  const normalizedCorrectionDemand = Math.min(1, Math.max(Math.abs(headingCorrectionDeg), aoaDemandDeg) / 90);
   const normalizedSpeed = speedAfterDragMps / Math.max(physics.maxSpeedMps, 1);
   const highAngleTurnLossMultiplier = 1
     + ((physics.highAngleTurnLossMultiplier ?? 1) - 1) * normalizedCorrectionDemand ** 1.5;

@@ -7,6 +7,7 @@ Use the smallest relevant check set for the task. Do not run the full script sui
 - Guidance separation / architecture: `scripts/checkGuidanceSeparation.mjs`
 - Guidance kinematics: `scripts/checkGuidanceKinematics.mjs`
 - Missile physics: `scripts/checkMissilePhysicsV2.mjs`
+- Aster PIF / PAC attitude impulses + control jets: `scripts/checkTerminalControlActuators.mjs`
 - Missile calibration: `scripts/checkMissileCalibration.mjs`
 - Intercept feasibility: `scripts/checkInterceptFeasibility.mjs`
 - Ballistic intercepts: `scripts/checkBallisticInterceptV2.mjs`

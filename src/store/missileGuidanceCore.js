@@ -1,5 +1,6 @@
 import { getBearing, getDestinationPoint } from './geo.js';
 import { getEffectiveTurnPerformance } from './interceptorPhysics.js';
+import { advanceControlActuators, finishControlAttitude } from './interceptorControlActuators.js';
 
 const DEG_TO_RAD = Math.PI / 180;
 const RAD_TO_DEG = 180 / Math.PI;
@@ -271,10 +272,12 @@ export function computeProportionalNavigation({ interceptor, targetState, soluti
   };
 }
 
-export function applyMissileAutopilot({ interceptor, command, deltaTimeSec, physics }) {
+export function applyMissileAutopilot({ interceptor, command, deltaTimeSec, physics, controlContext }) {
   const responseTimeSec = Math.max(0.04, physics.autopilotResponseTimeSec ?? 0.22);
   const responseAlpha = 1 - Math.exp(-deltaTimeSec / responseTimeSec);
-  const previous = interceptor.actualAccelerationVectorMps2
+  const previous = (physics.controlActuators?.enabled
+    ? interceptor.controlActuators?.aerodynamicAccelerationVectorMps2 : null)
+    ?? interceptor.actualAccelerationVectorMps2
     ?? { eastMps: 0, northMps: 0, upMps: 0 };
   let actualAccelerationVectorMps2 = {
     eastMps: previous.eastMps + (command.commandedAccelerationVectorMps2.eastMps
@@ -291,6 +294,12 @@ export function applyMissileAutopilot({ interceptor, command, deltaTimeSec, phys
   const velocityUnit = normalize(currentVelocity);
   actualAccelerationVectorMps2 = clampVector(
     rejectFrom(actualAccelerationVectorMps2, velocityUnit), command.availableAccelerationMps2);
+  const actuatorState = advanceControlActuators({ interceptor, command, context: controlContext,
+    physics, deltaTimeSec, velocityUnit, speedMps,
+    aerodynamicAcceleration: actualAccelerationVectorMps2 });
+  if (actuatorState) actualAccelerationVectorMps2 = clampVector(add(
+    actuatorState.aerodynamicAccelerationVectorMps2,
+    actuatorState.pifAccelerationVectorMps2), command.availableAccelerationMps2);
   const nextDirection = normalize(add(currentVelocity,
     scale(actualAccelerationVectorMps2, deltaTimeSec)));
   const horizontalDirection = Math.hypot(nextDirection.eastMps, nextDirection.northMps);
@@ -305,6 +314,8 @@ export function applyMissileAutopilot({ interceptor, command, deltaTimeSec, phys
     actualAccelerationVectorMps2.northMps);
   const actualTotalAccelerationMps2 = magnitude(actualAccelerationVectorMps2);
   return {
+    ...(actuatorState ? { controlActuators: finishControlAttitude({ state: actuatorState,
+      interceptor, physics, velocityUnit, nextDirection, speedMps, deltaTimeSec }) } : {}),
     heading, flightPathAngleDeg, headingTurnRateDegPerSec, pitchRateDegPerSec,
     turnRateDegPerSec, actualAccelerationVectorMps2,
     actualLateralAccelerationMps2: actualHorizontalAccelerationMps2,
